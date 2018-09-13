@@ -17,11 +17,12 @@ def ping(instance, source, *args):
 hooks["PING"] = ping
 
 class Request(object):
-	def __init__(self, instance, target, source, text):
+	def __init__(self, instance, target, source, altnick, text):
 		self.instance = instance
 		self.target = target
 		self.source = source
-		self.nick = Irc.get_nickname(source)
+		self.nick = Irc.get_nickname(source, text)
+		self.altnick = altnick
 		self.text = text
 
 	def privmsg(self, targ, text, priority = None):
@@ -32,9 +33,11 @@ class Request(object):
 			else:
 				Irc.instance_send(self.instance, ("PRIVMSG", targ, text[i:i+350]))
 
-	def reply(self, text):
+	def reply(self, text, altnick = False):
 		if self.nick == self.target:
 			self.privmsg(self.target, self.nick + ": " + text, priority = 10)
+		elif altnick:
+			self.privmsg(self.target, self.altnick + ": " + text)
 		else:
 			self.privmsg(self.target, self.nick + ": " + text)
 
@@ -96,19 +99,29 @@ def message(instance, source, target, text):
 		changes = p.wait()
 		if changes:
 			hash += "[+]"
-		version = "Doger by mniip, version " + hash
-		Irc.instance_send(instance, ("NOTICE", Irc.get_nickname(source), "\x01VERSION " + version + "\x01"), priority = 20)
+		version = "Rogerer by TheHoliestRoger, version " + hash
+		Irc.instance_send(instance, ("NOTICE", Irc.get_nickname(source, text), "\x01VERSION " + version + "\x01"), priority = 20)
 	else:
 		commandline = None
+		altnick = Irc.get_nickname(source, text, altnick=True)
+		if any(x.lower() in str(source).lower() for x in Config.config["bridgebotnicks"]) and ">" in str(text):
+			text = text.split("> ", 1)[1]
+		nick = Irc.get_nickname(source, text)
 		if target == instance:
 			commandline = text
 		if text[0] == Config.config["prefix"]:
 			commandline = text[1:]
+		# Track & update last time user talked in channel (ignore PM to bot for activity purposes)
+		if target.startswith('#'):
+			with Global.active_lock:
+				if not target in Global.active_list.keys():
+					Global.active_list[target] = {}
+				Global.active_list[target][nick] = time.time()
 		if commandline:
 			if Irc.is_ignored(host):
-				Logger.log("c", instance + ": %s <%s ignored> %s " % (target, Irc.get_nickname(source), text))
+				Logger.log("c", instance + ": %s <%s ignored> %s " % (target, nick, text))
 				return
-			Logger.log("c", instance + ": %s <%s> %s " % (target, Irc.get_nickname(source), text))
+			Logger.log("c", instance + ": %s <%s> %s " % (target, nick, text))
 			if Config.config.get("ignore", None):
 				t = time.time()
 				score = Global.flood_score.get(host, (t, 0))
@@ -116,10 +129,10 @@ def message(instance, source, target, text):
 				if score > Config.config["ignore"]["limit"] and not Irc.is_admin(source):
 					Logger.log("c", instance + ": Ignoring " + host)
 					Irc.ignore(host, Config.config["ignore"]["timeout"])
-					Irc.instance_send(instance, ("PRIVMSG", Irc.get_nickname(source), "You're sending commands too quickly. Your host is ignored for 240 seconds"))
+					Irc.instance_send(instance, ("PRIVMSG", nick, "You're sending commands too quickly. Your host is ignored for 240 seconds"))
 					return
 				Global.flood_score[host] = (t, score)
-			src = Irc.get_nickname(source)
+			src = nick
 			if target == instance:
 				reply = src
 			else:
@@ -135,7 +148,7 @@ def message(instance, source, target, text):
 				cmd = Commands.commands.get(command.lower(), None)
 				if not cmd.__doc__ or cmd.__doc__.find("admin") == -1 or Irc.is_admin(source):
 					if cmd:
-						req = Request(instance, reply, source, commandline)
+						req = Request(instance, reply, source, altnick, commandline)
 						t = threading.Thread(target = run_command, args = (cmd, req, args))
 						t.start()
 hooks["PRIVMSG"] = message
@@ -143,11 +156,15 @@ hooks["PRIVMSG"] = message
 def join(instance, source, channel, account, _):
 	if account == "*":
 		account = False
-	nick = Irc.get_nickname(source)
+	nick = Irc.get_nickname(source, "")
+	# acct = Irc.account_names([nick])[0]
 	with Global.account_lock:
 		if nick  == instance:
 			Global.account_cache[channel] = {}
-		Global.account_cache[channel][nick] = account
+		# elif channel in Config.config["welcome_channels"] and not acct and not Transactions.check_exists(nick):
+		# elif channel in Config.config["welcome_channels"] and not Transactions.check_exists(nick):
+		# 	Irc.instance_send(instance, ("PRIVMSG", channel, "Welcome our newest Rogeteer - %s!") % (nick))
+		Global.account_cache[channel][nick] = account	
 		for channel in Global.account_cache:
 			if nick in Global.account_cache[channel]:
 				Global.account_cache[channel][nick] = account
@@ -155,7 +172,7 @@ def join(instance, source, channel, account, _):
 hooks["JOIN"] = join
 
 def part(instance, source, channel, *_):
-	nick = Irc.get_nickname(source)
+	nick = Irc.get_nickname(source, "")
 	with Global.account_lock:
 		if nick == instance:
 			del Global.account_cache[channel]
@@ -178,7 +195,7 @@ def kick(instance, _, channel, nick, *__):
 hooks["KICK"] = kick
 
 def quit(instance, source, _):
-	nick = Irc.get_nickname(source)
+	nick = Irc.get_nickname(source, "")
 	with Global.account_lock:
 		if nick == instance:
 			chans = []
@@ -198,7 +215,7 @@ hooks["QUIT"] = quit
 def account(instance, source, account):
 	if account == "*":
 		account = False
-	nick = Irc.get_nickname(source)
+	nick = Irc.get_nickname(source, "")
 	with Global.account_lock:
 		for channel in Global.account_cache:
 			if nick in Global.account_cache[channel]:
@@ -207,7 +224,7 @@ def account(instance, source, account):
 hooks["ACCOUNT"] = account
 
 def _nick(instance, source, newnick):
-	nick = Irc.get_nickname(source)
+	nick = Irc.get_nickname(source, "")
 	with Global.account_lock:
 		for channel in Global.account_cache:
 			if nick in Global.account_cache[channel]:

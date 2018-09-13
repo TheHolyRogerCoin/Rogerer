@@ -1,4 +1,4 @@
-import socket, random, threading, Queue, sys, traceback, time, ssl, signal
+import socket, random, threading, Queue, sys, traceback, time, ssl, signal, re
 from string import maketrans
 import Config, Global, Hooks, Logger, Commands
 
@@ -8,8 +8,17 @@ caseless = "0123456789_-`@"
 
 ircupper = maketrans(lowercase, uppercase)
 
-def get_nickname(hostmask):
-	return hostmask.split("!", 1)[0]
+def get_nickname(hostmask, text, altnick = False):
+	text = strip_colours(text)
+	nick = str(hostmask.split("!", 1)[0])
+	if any(x.lower() == nick.lower() for x in Config.config["bridgebotnicks"]) and ">" in str(text) and altnick:
+		u = text.split(">", 1)[0]
+		if u[0] == "<":
+			# Logger.log("r", "First chars: '%s' - '%s'" % (u[1],u[2]))
+			u = u[1:]
+		return u
+	else:
+		return nick
 
 def strip_nickname(name):
 	return name.lstrip("+@")
@@ -27,6 +36,13 @@ def sanitize_nickname(nickname):
 	if len(nickname):
 		return "".join(c if c in lowercase or c in uppercase or c in caseless else '.' for c in nickname)
 	return "."
+
+def strip_colours(s):
+    ccodes = ["\x0F", "\x16", "\x12", "\x1D", "\x1F", "\x02",
+        "\x03([0-9][0-6]?)?,?([0-9][0-6]?)?"]
+    for cc in ccodes:
+        s = re.sub(cc, "", s)
+    return s
 
 def is_ignored(host):
 	r = Global.ignores.get(host, None)
@@ -87,6 +103,12 @@ def account_names(nicks):
 	Logger.log("w", "Solution: " + " ".join([repr(x) for x in results]))
 	return results
 
+def getacctnick(acct):
+	if not acct in Global.acctnick_list:
+		return None
+	else:
+		return Global.acctnick_list[acct]
+
 def parse(cmd):
 	data = cmd.split(" ")
 	if data[0][0] != ':':
@@ -134,6 +156,7 @@ def reader_thread(instance, sock):
 				while buffer.find("\n") != -1:
 					line, buffer = buffer.split("\n", 1)
 					line = line.rstrip("\r")
+					line = strip_colours(line)
 					Logger.log("r", instance + ": > " + line)
 					handle_input(instance, line)
 				buffer += sock.recv(4096)
@@ -275,7 +298,7 @@ def on_SIGHUP(signum, frame):
 	cmd = Commands.commands.get("admin")
 	if cmd and Config.config.get("irclog"):
 		Logger.irclog("Received SIGHUP, reloading Config")
-		req = Hooks.Request(Config.config["irclog"][0], Config.config["irclog"][1], "@SIGHUP", "SIGHUP")
+		req = Hooks.Request(Config.config["irclog"][0], Config.config["irclog"][1], "@SIGHUP", "@SIGHUP", "SIGHUP")
 		Hooks.run_command(cmd, req, ["reload", "Config"])
 
 def manager():

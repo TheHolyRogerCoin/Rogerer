@@ -1,12 +1,13 @@
 import sys, os, threading, traceback, time
-import dogecoinrpc, dogecoinrpc.connection, psycopg2
+import theholyrogerrpc, theholyrogerrpc.connection, psycopg2
 import Config, Logger, Blocknotify
 
 def database():
 	return psycopg2.connect(database = Config.config["database"])
 
 def daemon():
-	return dogecoinrpc.connect_to_local()
+	return theholyrogerrpc.connect_to_local()
+JSONRPCException = theholyrogerrpc.proxy.JSONRPCException
 
 cur = database().cursor()
 cur.execute("SELECT block FROM lastblock")
@@ -15,19 +16,25 @@ del cur
 
 class NotEnoughMoney(Exception):
 	pass
-InsufficientFunds = dogecoinrpc.exceptions.InsufficientFunds
+InsufficientFunds = theholyrogerrpc.exceptions.InsufficientFunds
 
 unconfirmed = {}
 
-# Monkey-patching dogecoinrpc
+# Monkey-patching theholyrogerrpc
 def patchedlistsinceblock(self, block_hash, minconf=1):
-	res = self.proxy.listsinceblock(block_hash, minconf)
-	res['transactions'] = [dogecoinrpc.connection.TransactionInfo(**x) for x in res['transactions']]
-	return res
+	try:
+		res = self.proxy.listsinceblock(block_hash, minconf)
+		res['transactions'] = [theholyrogerrpc.connection.TransactionInfo(**x) for x in res['transactions']]
+		return res
+	except JSONRPCException as e:
+		pass
+	except:
+		pass
+
 try:
 	daemon().listsinceblock("0", 1)
 except TypeError:
-	dogecoinrpc.connection.DogecoinConnection.listsinceblock = patchedlistsinceblock
+	theholyrogerrpc.connection.TheHolyRogerConnection.listsinceblock = patchedlistsinceblock
 # End of monkey-patching
 
 def txlog(cursor, token, amt, tx = None, address = None, src = None, dest = None):
@@ -38,11 +45,19 @@ def notify_block():
 	lb = daemon().listsinceblock(lastblock, Config.config["confirmations"])
 	db = database()
 	cur = db.cursor()
-	txlist = [(int(tx.amount), tx.address) for tx in lb["transactions"] if tx.category == "receive" and tx.confirmations >= Config.config["confirmations"]]
+	txlist = []
+	for tx in lb["transactions"]:
+		if tx.category == "receive" and tx.confirmations >= Config.config["confirmations"]:
+			txlist.append((int(tx.amount), tx.address, tx.txid.encode("ascii")))
+			Logger.log("c","INCOMING: %s %s %s" % (tx.amount, tx.txid.encode("ascii"), tx.address))
+
 	if len(txlist):
 		addrlist = [(tx[1],) for tx in txlist]
-		cur.executemany("UPDATE accounts SET balance = balance + %s FROM address_account WHERE accounts.account = address_account.account AND address_account.address = %s", txlist)
+		# updated to prevent duplicate deposits when bot started before wallet ready by only doing an update if txid doesn't already exist in db
+		# Ideally better option is wait until wallet is ready. Maybe getblockcount->getblockhash->getblock->"time" value age old enough?
+		cur.executemany("UPDATE accounts SET balance = balance + %s FROM address_account WHERE accounts.account = address_account.account AND address_account.address = %s AND NOT EXISTS (SELECT transaction FROM txlog WHERE transaction = %s)", txlist)
 		cur.executemany("UPDATE address_account SET used = '1' WHERE address = %s", addrlist)
+
 	unconfirmed = {}
 	for tx in lb["transactions"]:
 		if tx.category == "receive":
@@ -50,9 +65,10 @@ def notify_block():
 			if cur.rowcount:
 				account = cur.fetchone()[0]
 				if tx.confirmations < Config.config["confirmations"]:
-						unconfirmed[account] = unconfirmed.get(account, 0) + int(tx.amount)
+					unconfirmed[account] = unconfirmed.get(account, 0) + int(tx.amount)
 				else:
 					txlog(cur, Logger.token(), int(tx.amount), tx = tx.txid.encode("ascii"), address = tx.address, dest = account)
+
 	cur.execute("UPDATE lastblock SET block = %s", (lb["lastblock"],))
 	db.commit()
 	lastblock = lb["lastblock"]
@@ -67,6 +83,30 @@ def balance(account):
 
 def balance_unconfirmed(account):
 	return unconfirmed.get(account, 0)
+
+def check_exists(target): 
+	cur = database().cursor()
+	cur.execute("SELECT balance FROM accounts WHERE account = %s", (target,))
+	if not cur.rowcount:
+		return False
+	return True
+
+
+def faucet_board(instance, category = 'jackpot'): 
+	cur = database().cursor()
+	if category == 'losers':
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s ORDER BY amount ASC, timestamp DESC limit 1", (instance,))
+	elif category == 'topwinner':
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount < 1000 ORDER BY amount DESC, timestamp DESC limit 1", (instance,))
+	elif category == 'runnerup1':
+		# cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount >= 3001 AND amount <= 5000 ORDER BY amount DESC, timestamp DESC limit 1", (instance,))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount >= 1000 AND amount <= 2000 ORDER BY timestamp DESC limit 1", (instance,))
+	elif category == 'jackpot':
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount >= 6000 ORDER BY timestamp DESC limit 1", (instance,))
+	if cur.rowcount:
+		return cur.fetchone()
+	else:
+		return False
 
 def tip(token, source, target, amount): 
 	db = database()
@@ -109,21 +149,34 @@ def withdraw(token, account, address, amount):
 	db = database()
 	cur = db.cursor()
 	try:
-		cur.execute("UPDATE accounts SET balance = balance - %s WHERE account = %s", (amount + 1, account))
+		cur.execute("UPDATE accounts SET balance = balance - %s WHERE account = %s", (amount + Config.config["txfee"], account))
 	except psycopg2.IntegrityError as e:
 		raise NotEnoughMoney()
 	if not cur.rowcount:
 		raise NotEnoughMoney()
 	try:
-		tx = daemon().sendtoaddress(address, amount, comment = "sent with Doger")
+		# Unlock wallet, if applicable
+		if Config.config.has_key('walletpassphrase'):
+			Logger.log("c","Wallet Unlocked")
+			daemon().walletpassphrase(Config.config["walletpassphrase"], 1)
+
+		# Perform transaction
+		tx = daemon().sendtoaddress(address, amount, comment = "sent with Rogerer")
+
+		# Lock wallet, if applicable
+		if Config.config.has_key('walletpassphrase'):
+			Logger.log("c","Wallet Locked")
+			daemon().walletlock()
+
 	except InsufficientFunds:
 		raise
 	except:
 		Logger.irclog("Emergency lock on account '%s'" % (account))
+		Logger.log("ce","Emergency lock on account '%s'" % (account))
 		lock(account, True)
 		raise
 	db.commit()
-	txlog(cur, token, amount + 1, tx = tx.encode("ascii"), address = address, src = account)
+	txlog(cur, token, amount + Config.config["txfee"], tx = tx.encode("ascii"), address = address, src = account)
 	db.commit()
 	return tx.encode("ascii")
 
@@ -157,12 +210,24 @@ def balances():
 	cur = database().cursor()
 	cur.execute("SELECT SUM(balance) FROM accounts")
 	db = float(cur.fetchone()[0])
-	dogecoind = float(daemon().getbalance(minconf = Config.config["confirmations"]))
-	return (db, dogecoind)
+	theholyrogerd = float(daemon().getbalance(minconf = Config.config["confirmations"]))
+	return (db, theholyrogerd)
 
 def get_info():
 	info = daemon().getinfo()
 	return (info, daemon().getblockhash(info.blocks).encode("ascii"))
+
+def get_mining_info():
+	info = daemon().getmininginfo()
+	return (info, daemon().getblockhash(info.blocks).encode("ascii"))
+
+def get_all_info():
+	m_info = daemon().getmininginfo()
+	n_info = daemon().getnetworkinfo()
+	# allinfo = minfo.copy()
+	# allinfo.update(ninfo)
+	bestblockhash = daemon().getblockhash(m_info.blocks).encode("ascii")
+	return (m_info, n_info, bestblockhash)
 
 def lock(account, state = None):
 	if state == None:

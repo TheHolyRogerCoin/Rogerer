@@ -1,4 +1,6 @@
 *.pyc
-dogecoind
+theholyrogerd
 Config.py
 *.log
+*.bak
+

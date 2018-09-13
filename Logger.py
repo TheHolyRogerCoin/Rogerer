@@ -1,16 +1,17 @@
 import Config, Irc
-import time, md5, random
+import time, md5, random, os
 
 def log(spec, text):
 # Error Raw Connection Tx Whois Manager
 	template = "erctwm"
 	specifier = ""
+	pid = os.getpid()
 	for c in template:
 		specifier += c if c in spec else "_"
 	with open(Config.config["logfile"], "a") as f:
 		t = time.time()
 		for line in text.split("\n"):
-			f.write("[%s] [%f] <%s> %s\n" % (time.ctime(t), t, specifier, line))
+			f.write("[%s] [%s] [%f] <%s> %s\n" % (time.ctime(t), pid, t, specifier, line))
 
 def irclog(text):
 	if Config.config.get("irclog", None):

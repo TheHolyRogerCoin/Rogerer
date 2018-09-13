@@ -1,12 +1,12 @@
-Doger
+Rogerer
 =====
 
 IRC tip bot in python.
 
 **Requirements:**
 
-- **RPC library** - From [here](https://github.com/jcsaaddupuy/dogecoin-python) or pypi.
-- **Dogecoind** - From [here](https://github.com/dogecoin/dogecoin/), you need the `dogecoind` binary.
+- **RPC library** - From [here](https://github.com/TheHolyRoger/theholyroger-python) or pypi.
+- **TheHolyRogerd** - From [here](https://github.com/TheHolyRoger/TheHolyRogerCoin/), you need the `theholyrogerd` binary.
 - **Postgres** - From [here](http://www.postgresql.org/), python binding from [here](https://pypi.python.org/pypi/psycopg2)
 - **Python** - Obviously.
 
@@ -51,7 +51,7 @@ config = {
 }
 ```
 
-- Add the following to the dogecoin.conf:
+- Add the following to the theholyroger.conf:
 
 ```
 rpcthreads=100
@@ -66,10 +66,10 @@ blocknotify=/usr/bin/touch blocknotify/blocknotify
 
 ```
 CREATE TABLE accounts (account character varying(16) NOT NULL, balance bigint DEFAULT 0, CONSTRAINT balance CHECK ((balance >= 0)));
-CREATE TABLE address_account (address character varying(34) NOT NULL, account character varying(16), used bit(1) DEFAULT B'0'::"bit" NOT NULL);
+CREATE TABLE address_account (address character varying(90) NOT NULL, account character varying(16), used bit(1) DEFAULT B'0'::"bit" NOT NULL);
 CREATE TABLE locked (account character varying(16));
 CREATE TABLE lastblock (block character varying(64));
-CREATE TABLE txlog (timestamp double precision, token character varying(8), source character varying(16), destination character varying(16), amount bigint, transaction character varying(64), address character varying(34));
+CREATE TABLE txlog (timestamp double precision, token character varying(8), source character varying(16), destination character varying(16), amount bigint, transaction character varying(64), address character varying(90));
 INSERT INTO lastblock VALUES ('0');
 ALTER TABLE accounts ADD CONSTRAINT accounts_pkey PRIMARY KEY (account);
 ALTER TABLE address_account ADD CONSTRAINT address_account_pkey PRIMARY KEY (address);
@@ -79,5 +79,5 @@ ALTER TABLE locked ADD CONSTRAINT locked_pkey PRIMARY KEY (account);
     
 **Running it:**
 
-- Start up the dogecoin daemon (`dogecoind`)
+- Start up the theholyroger daemon (`theholyrogerd`)
 - Launch the bot with `python Main.py`

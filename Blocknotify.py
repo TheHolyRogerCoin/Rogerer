@@ -8,6 +8,7 @@ class Inotifier(pyinotify.ProcessEvent):
 		try:
 			with blocklock:
 				Transactions.notify_block()
+				Logger.log("c", "New Block")
 		except Exception as e:
 			type, value, tb = sys.exc_info()
 			Logger.log("te", "ERROR in blocknotify")
