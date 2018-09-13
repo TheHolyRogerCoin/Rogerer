@@ -626,6 +626,22 @@ def roulette_roll(bet_choice, landon):
 	red_nums = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
 	black_nums = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
 	topline_nums = [0, 1, 2, 3]
+	snake_nums = [1, 5, 9, 12, 14, 16, 19, 23, 27, 30, 32, 34]
+	col1_nums = [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34]
+	col2_nums = [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
+	col3_nums = [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36]
+	s1_nums = [1, 2, 3]
+	s2_nums = [4, 5, 6]
+	s3_nums = [7, 8, 9]
+	s4_nums = [10, 11, 12]
+	s5_nums = [13, 14, 15]
+	s6_nums = [16, 17, 18]
+	s7_nums = [19, 20, 21]
+	s8_nums = [22, 23, 24]
+	s9_nums = [25, 26, 27]
+	s10_nums = [28, 29, 30]
+	s11_nums = [31, 32, 33]
+	s12_nums = [34, 35, 36]
 
 	if (landon > 0 and landon <= 36 and
 		(	(bet_choice == 'even' and landon % 2 == 0) or 
@@ -653,6 +669,34 @@ def roulette_roll(bet_choice, landon):
 		roul_win = True
 		roul_multiplier = 9
 		odds_str = "(8to1)"
+	elif (landon > 0 and
+		(	((bet_choice == 'c1' or bet_choice == 'col1') and landon in col1_nums) or
+			((bet_choice == 'c2' or bet_choice == 'col2') and landon in col2_nums) or
+			((bet_choice == 'c3' or bet_choice == 'col3') and landon in col3_nums) )):
+			roul_win = True
+			roul_multiplier = 3
+			odds_str = "(2to1)"
+	elif (landon > 0 and
+		(	((bet_choice == 'street1' or bet_choice == 's1') and landon in s1_nums) or
+			((bet_choice == 'street2' or bet_choice == 's2') and landon in s2_nums) or
+			((bet_choice == 'street3' or bet_choice == 's3') and landon in s3_nums) or
+			((bet_choice == 'street4' or bet_choice == 's4') and landon in s4_nums) or
+			((bet_choice == 'street5' or bet_choice == 's5') and landon in s5_nums) or
+			((bet_choice == 'street6' or bet_choice == 's6') and landon in s6_nums) or
+			((bet_choice == 'street7' or bet_choice == 's7') and landon in s7_nums) or
+			((bet_choice == 'street8' or bet_choice == 's8') and landon in s8_nums) or
+			((bet_choice == 'street9' or bet_choice == 's9') and landon in s9_nums) or
+			((bet_choice == 'street10' or bet_choice == 's10') and landon in s10_nums) or
+			((bet_choice == 'street11' or bet_choice == 's11') and landon in s11_nums) or
+			((bet_choice == 'street12' or bet_choice == 's12') and landon in s12_nums) )):
+		roul_win = True
+		roul_multiplier = 12
+		odds_str = "(11to1)"
+	elif (landon > 0 and
+		(	bet_choice == 'snake' and landon in snake_nums)):
+		roul_win = True
+		roul_multiplier = 3
+		odds_str = "(2to1)"
 	elif bet_choice.isdigit():
 		bet_choice_num = parse_amount(bet_choice, min_amount = 0)
 		if bet_choice_num >= 0 and bet_choice_num <= 36 and bet_choice_num == landon:
@@ -678,8 +722,8 @@ def roulette(req, arg):
 	won_bet_count = 0
 	lost_bets = 0
 	total_bet_amt = 0
-	roul_valid_bets = ["even","odd","1st","2nd","3rd","low","high","red","black","topline"]
-	roul_valid_bets_aliases = ["first","second","third","basket"]
+	roul_valid_bets = ["even","odd","1st","2nd","3rd","low","high","red","black","topline","snake","c1","c2","c3","s1","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11","s12"]
+	roul_valid_bets_aliases = ["first","second","third","basket","col1","col2","col3","street1","street2","street3","street4","street5","street6","street7","street8","street9","street10","street11","street12"]
 	curtime = time.time()
 	random.seed(curtime*1000)
 	# if not Irc.is_admin(req.source):
