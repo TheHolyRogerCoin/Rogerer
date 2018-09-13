@@ -19,7 +19,7 @@ def check_gamble_timer(targetchannel, cmd_args, nick, source, acct, curtime, tim
 	else:
 		str_botchannel = ""
 		is_admin = Irc.is_admin(source)
-	if is_admin or acct not in Global.gamble_list[targetchannel]:
+	if is_admin or acct not in Global.gamble_list[targetchannel] or Irc.is_super_admin(source):
 		return False
 	if len(cmd_args) > 0 and nick in Global.response_read_timers:
 		timer = 0
@@ -78,20 +78,16 @@ def roger_that(req, arg):
 	"""%roger-that games must be started by mods."""
 	if len(arg) < 1 or not (arg[0] == "start" or arg[0] == "debug" or arg[0] == "auto" or arg[0] == "end-game" or (len(arg[0]) >= 5 and arg[0][0:5].lower() == "roger")):
 		return
-	toacct = Irc.account_names([req.altnick])[0]
+	toacct = Irc.account_names([req.nick])[0]
 	acct = req.instance
 	host = Irc.get_host(req.source)
 	curtime = time.time()
 	amount = 69
 	random.seed(curtime*1000)
-	if host in Global.gamble_list and Global.gamble_list[host] != toacct and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
-		Transactions.lock(toacct, True)
-	user_valid = validate_user(toacct)
-	if user_valid != True: 
-		if Transactions.check_exists(req.altnick) and not Transactions.lock(toacct) and not Transactions.lock(req.altnick):
-			toacct = req.altnick
-		else:
-			return req.notice_private(user_valid)
+	user_valid, toacct = validate_user(toacct, host = host, nick = req.nick, altnick = req.altnick, allow_discord_nicks = True, hostlist = Global.gamble_list)
+	if user_valid != True:
+		if "Quiet" == user_valid: return
+		return req.notice_private(user_valid)
 	if req.target == req.nick and not Irc.is_admin(req.source):
 		return req.reply("Can't roger that in private!")
 	if is_soak_ignored(toacct):
@@ -137,7 +133,7 @@ def roger_that(req, arg):
 			reply_str = "No one ROGER'd in time so %s claimed it! %s" % (req.altnick, won_string)
 		else:
 			reply_str = "%s ROGER'd first! %s!" % (req.altnick, won_string)
-		req.say(reply_str)
+		req.say("%s (@Pot = %i)" % (reply_str, Transactions.balance(req.instance)))
 	except Transactions.NotEnoughMoney:
 		return req.notice_private("We're all out of %s!!" % (Config.config["coinab"]))
 
@@ -194,7 +190,7 @@ def lotto(req, arg):
 				return req.reply("We're all out of %s!!" % (Config.config["coinab"]), True)
 			Global.gamble_list["@Gamble_buildup"] = 0
 			won_string = "%s %i %s" % (coloured_text(text = "WON a golden shower", colour = "03", channel = req.target), amount, coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
-			req.say("%s played %i %s (%i%% chance) and %s! Be moist and rejoice! %s [%s]" % (req.nick, amount, Config.config["coinab"], chances, coloured_text(text = "WON a golden shower", colour = "03", channel = req.target), coloured_text(text = "Splashback!", colour = "03", channel = req.target), token))
+			req.say("%s played %i %s (%i%% chance) and %s! Be moist and rejoice! %s (@Pot = %i)" % (req.nick, amount, Config.config["coinab"], chances, coloured_text(text = "WON a golden shower", colour = "03", channel = req.target), coloured_text(text = "Splashback!", colour = "03", channel = req.target), Transactions.balance(req.instance)))
 			try:
 				Transactions.tip(token, toacct, acct, parse_amount("goldenshower",toacct), tip_source = "@LOTTO") # accts swapped
 			except Transactions.NotEnoughMoney:
@@ -382,7 +378,7 @@ def hand_winner_tip(req, bet, pot_acct, winner_acct, token, hand_reply, hand_pay
 	try:
 		Transactions.tip(token, pot_acct, winner_acct, (winnings+bet), tip_source = "@BLACKJACK")
 		won_string = "%s %i %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), winnings, coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
-		return req.reply("%s %s %s!" % (hand_reply, won_string, odds))
+		return req.reply("%s %s %s! (@Pot = %i)" % (hand_reply, won_string, odds, Transactions.balance(req.instance)))
 	except Transactions.NotEnoughMoney:
 		return req.reply("Bot ran out of winnings!")
 
@@ -624,19 +620,30 @@ def roulette_roll(bet_choice, landon):
 	red_nums = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
 	black_nums = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
 	topline_nums = [0, 1, 2, 3]
-	if landon > 0 and ((bet_choice == 'even' and landon % 2 == 0) or (bet_choice == 'odd' and landon % 2 == 1) or (bet_choice == 'low' and landon < 19) or (bet_choice == 'high' and landon >= 19)):
+
+	if (landon > 0 and landon <= 36 and
+		(	(bet_choice == 'even' and landon % 2 == 0) or 
+			(bet_choice == 'odd' and landon % 2 == 1) or 
+			(bet_choice == 'low' and landon < 19) or 
+			(bet_choice == 'high' and landon >= 19) )):
 		roul_win = True
 		roul_multiplier = 2
 		odds_str = "(1to1)"
-	elif landon > 0 and (((bet_choice == '1st' or bet_choice == 'first') and landon < 13) or ((bet_choice == '2nd' or bet_choice == 'second') and landon >= 13 and landon <= 25) or ((bet_choice == '3rd' or bet_choice == 'third') and landon > 25)):
+	elif (landon > 0 and landon <= 36 and
+		(	((bet_choice == '1st' or bet_choice == 'first') and landon < 13) or 
+			((bet_choice == '2nd' or bet_choice == 'second') and landon >= 13 and landon < 25) or 
+			((bet_choice == '3rd' or bet_choice == 'third') and landon >= 25) )):
 		roul_win = True
 		roul_multiplier = 3
 		odds_str = "(2to1)"
-	elif landon > 0 and ((bet_choice == 'red' and landon in red_nums) or (bet_choice == 'black' and landon in black_nums)):
+	elif (landon > 0 and landon <= 36 and
+		(	(bet_choice == 'red' and landon in red_nums) or 
+			(bet_choice == 'black' and landon in black_nums) )):
 		roul_win = True
 		roul_multiplier = 2
 		odds_str = "(1to1)"
-	elif (bet_choice == 'topline' and landon in topline_nums) or (bet_choice == 'basket' and landon in topline_nums):
+	elif (	(bet_choice == 'topline' and landon in topline_nums) or 
+		(bet_choice == 'basket' and landon in topline_nums)):
 		roul_win = True
 		roul_multiplier = 9
 		odds_str = "(8to1)"
@@ -665,7 +672,8 @@ def roulette(req, arg):
 	won_bet_count = 0
 	lost_bets = 0
 	total_bet_amt = 0
-	roul_valid_bets = ["even","odd","1st","2nd","3rd","first","second","third","low","high","red","black","topline","basket"]
+	roul_valid_bets = ["even","odd","1st","2nd","3rd","low","high","red","black","topline"]
+	roul_valid_bets_aliases = ["first","second","third","basket"]
 	curtime = time.time()
 	random.seed(curtime*1000)
 	# if not Irc.is_admin(req.source):
@@ -683,9 +691,13 @@ def roulette(req, arg):
 	for i in range(bet_count):
 		argoffset = i+i
 		bet_choice = arg[(1+argoffset)].lower()
-		if bet_choice not in roul_valid_bets and not bet_choice.isdigit():
+		if bet_choice not in (roul_valid_bets+roul_valid_bets_aliases) and not (bet_choice.isdigit() and int(bet_choice) >= 0 and int(bet_choice) <= 36):
 			# return req.reply(gethelp("roul"))
-			return req.reply("Invalid bet, available bets: %s" % (roul_valid_bets))
+			inval_bet_str = "Invalid bet, available bets: %s or number of choice 0-36" % (roul_valid_bets)
+			if req.target not in Config.config["botchannels"]:
+				return req.notice_private(inval_bet_str)
+			else:
+				return req.reply(inval_bet_str)
 		try:
 			bet = parse_amount(arg[(0+argoffset)], acct)
 			arg[(0+argoffset)] = str(bet)

@@ -5,12 +5,26 @@ from collections import OrderedDict
 
 # nickserv_help_string = "You are not identified with freenode services (see /msg NickServ help - https://freenode.net/kb/answer/registration)"
 
-def validate_user(acct):
+def validate_user(acct, host = False, nick = False, altnick = False, allow_discord_nicks = False, hostlist = []):
+	msg = True
 	if not acct:
-		return "You are not identified with freenode services (see /msg NickServ help - https://freenode.net/kb/answer/registration)"
+		msg = "You are not identified with freenode services (see /msg NickServ help - https://freenode.net/kb/answer/registration)"
+	elif allow_discord_nicks and host in hostlist and hostlist[host].lower() != acct.lower() and not any(x.lower() == nick.lower() for x in Config.config["bridgebotnicks"]):
+		Transactions.lock(acct, True)
+		Logger.irclog("Locked %s for using multiple accts (Previous acct: %s, Current acct: %s)" % (nick, hostlist[host], acct))
 	if Transactions.lock(acct):
-		return "Your account is currently locked"
-	return True
+		msg = "Your account is currently locked"
+	if msg == True and allow_discord_nicks and any(x.lower() == nick.lower() for x in Config.config["bridgebotnicks"]):
+		check_acct_exists = Transactions.check_exists(altnick, check_alt = altnick)
+		if check_acct_exists and not Transactions.lock(acct) and not Transactions.lock(altnick):
+			acct = check_acct_exists
+		else:
+			acct = False
+			msg = "Quiet"
+		return msg, acct
+	elif allow_discord_nicks:
+		return msg, acct
+	return msg
 
 def random_line(file):
 	with open(file,'r') as afile:
@@ -178,8 +192,9 @@ def tip(req, arg, from_instance = False):
 	user_valid = validate_user(acct)
 	if user_valid != True: return req.notice_private(user_valid)
 	if not toacct:
-		if Transactions.check_exists(to):
-			toacct = to
+		check_acct_exists = Transactions.check_exists(to)
+		if check_acct_exists:
+			toacct = check_acct_exists
 		elif toacct == None:
 			return req.reply("%s is not online" % (target_nick(to)))
 		else:
@@ -306,19 +321,14 @@ def faucet(req, arg):
 			else:
 				str_loser = "No loser yet!"
 			return req.say("%s" % (str_loser))
-	toacct = Irc.account_names([req.altnick])[0]
+	toacct = Irc.account_names([req.nick])[0]
 	host = Irc.get_host(req.source)
 	curtime = time.time()
 	random.seed(curtime*1000)
-	if validate_user(toacct) == True and host in Global.faucet_list and Global.faucet_list[host].lower() != toacct.lower() and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
-		Transactions.lock(toacct, True)
-		Logger.irclog("Locked %s for using multiple accts (Previous acct: %s, Current acct: %s)" % (req.nick, Global.faucet_list[host], toacct))
-	user_valid = validate_user(toacct)
-	if user_valid != True: 
-		if Transactions.check_exists(req.altnick) and not Transactions.lock(toacct) and not Transactions.lock(req.altnick):
-			toacct = req.altnick
-		else:
-			return req.notice_private(user_valid)
+	user_valid, toacct = validate_user(toacct, host = host, nick = req.nick, altnick = req.altnick, allow_discord_nicks = True, hostlist = Global.faucet_list)
+	if user_valid != True:
+		if "Quiet" == user_valid: return
+		return req.notice_private(user_valid)
 	if is_soak_ignored(toacct):
 		return
 	if req.target == req.nick and not Irc.is_super_admin(req.source):
@@ -365,7 +375,7 @@ def faucet(req, arg):
 	try:
 		Transactions.tip(token, acct, toacct, amount, tip_source = "@FAUCET")
 		quote = str(random_line('quotes_faucet'))
-		req.say("%s found %i %s ($0.00)! %s%s [%s]" % (req.altnick, amount, Config.config["coinab"], quote, newhighest, token))
+		req.say("%s found %i %s ($0.00)! %s%s (@Pot = %i)" % (req.altnick, amount, Config.config["coinab"], quote, newhighest, Transactions.balance(req.instance)))
 		Global.faucet_list[toacct] = curtime
 		Global.faucet_list[host] = toacct
 		return
