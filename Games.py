@@ -226,6 +226,70 @@ def cards_hit(hand, deck):
 	hand.append(card)
 	return hand,deck
 
+def card_parse(card, val_only = False, suit_only = False, flip = False):
+	if flip:
+		card_value = card
+		if card_value == 11:
+			card_value = "J"
+		elif card_value == 12:
+			card_value = "Q"
+		elif card_value == 13:
+			card_value = "K"
+		elif card_value == 14:
+			card_value = "A"
+		else:
+			card_value = str(card_value)
+		return card_value
+	card_value = card[:-3]
+	card_suit = card[-3:]
+	if val_only:
+		if card_value == "J":
+			card_value = 11
+		elif card_value == "Q":
+			card_value = 12
+		elif card_value == "K":
+			card_value = 13
+		elif card_value == "A":
+			card_value = 14
+		else:
+			card_value = int(card_value)
+		return card_value
+	elif suit_only: return card_suit
+	return card_value, card_suit
+
+def game_winner_tip(token, bot_acct, player_acct, total_bet, game = "@GAME", debug = False, multiplier = 1, forfeit = False):
+	winnings = total_bet*multiplier
+	total_return_bet = total_bet + winnings
+	msg = "( +%i )" % (winnings)
+	if forfeit:
+		msg = "Player forfeited, you WON! ( +%i )" % (winnings)
+	if total_return_bet > 0 and not debug:
+		try:
+			Transactions.tip(token, source = bot_acct, target = player_acct, amount = (total_return_bet), tip_source = game) #toacct swapped
+		except Transactions.NotEnoughMoney:
+			req.notice_private("Bot ran out of money to return bet!")
+			return False
+	# elif debug:
+	# 	msg = "DEBUG "+msg
+	return msg
+
+def game_cancel_tip(token, bot_acct, player_acct, total_bet, game = "@GAME", debug = False, draw = False):
+	if draw:
+		return_bet = total_bet
+		msg = "bet(s) refunded. (%i)" % (return_bet)
+	else:
+		return_bet = total_bet/2
+		msg = "Previous game cancelled, bet(s) partially refunded. (%i of %i)" % (return_bet, total_bet)
+	if return_bet > 0 and not debug:
+		try:
+			Transactions.tip(token, source = bot_acct, target = player_acct, amount = (return_bet), tip_source = game) #toacct swapped
+		except Transactions.NotEnoughMoney:
+			req.notice_private("Bot ran out of money to return bet!")
+			return False
+	elif debug and not draw:
+		msg = "DEBUG "+msg
+	return msg
+
 def bj_deal():
 	deck = cards_decks(amt_decks = 4, split_deck = True)
 	phand = []
@@ -619,6 +683,614 @@ def bj(req, arg):
 		return req.notice_private("One game at a time!")
 
 
+
+def poker_dbglog(poker_vals = {}):
+	Logger.log("c",(
+		"Poker stored vals: game_start: %s, game_step: %s, game_playon: %s, poker_public: %s, Bet: %i, Game_Win: %s, Game_Draw: %s," % (
+			poker_vals["game_start"], poker_vals["game_step"], poker_vals["game_playon"], poker_vals["poker_public"], poker_vals["total_bet"], poker_vals["game_win"], poker_vals["game_draw"]) +
+		" Deck Count: %i, Dealer Hand Count: %i, Player Hand Count: %i, Table Hand Count: %i" % (
+			len(poker_vals["deck"]), len(poker_vals["dealer_hand"]), len(poker_vals["player_hand"]), len(poker_vals["table_hand"]))))
+
+
+
+
+def poker_score(hand):
+	score = 0
+	kicker = []
+	hand.sort()
+	hand_nosuits = []
+	# Check for Pairs
+	pairs = {}
+	prev = 0
+	for card in hand:
+		card_value = card_parse(card, val_only = True)
+		hand_nosuits.append(card_value)
+	hand_nosuits.sort()
+	for card in hand_nosuits:
+		if prev == card:
+			key = card
+			if key in pairs:
+				pairs[key] += 1
+			else:
+				pairs[key] = 2
+		prev = card
+	nop = {}
+	for k, v in pairs.iteritems():
+		if v in nop:
+			nop[v] += 1
+		else:
+			nop[v] = 1
+	if 4 in nop: #Has 4 of a kind
+		score = 7
+		kicker = pairs.keys()
+		kicker = [key for key in kicker if pairs[key] == 4] 
+		kicker.sort()
+		key = kicker[0]
+		temp = [card for card in hand_nosuits if card != key]
+		temp.sort()
+		card_value = temp.pop()
+		kicker.append(card_value)
+		return [score, kicker]
+	elif 3 in nop:  #Has At least 3 of A Kind
+		if nop[3] == 2 or 2 in nop: #Has two 3 of a kind, or a pair and 3 of a kind (fullhouse)
+			score = 6
+			kicker = pairs.keys()
+			kicker.sort()
+			kicker.reverse()
+			temp = kicker
+			kicker = [key for key in kicker if pairs[key] == 3]
+			if( len(kicker) > 1):
+				kicker.pop()
+			temp.remove(kicker[0])
+			card_value = temp[0]
+			kicker.append(card_value)
+		else: #Has Only 3 of A Kind
+			score = 3
+			kicker = pairs.keys()
+			kicker.sort()
+			key = kicker[0]
+			temp = [card for card in hand_nosuits if card != key]
+			temp.sort()
+			card_value = temp.pop()
+			kicker.append(card_value)
+			card_value = temp.pop()
+			kicker.append(card_value)
+	elif 2 in nop: #Has at Least a Pair
+		if nop[2] >= 2:	#Has at least 2  or 3 pairs
+			score = 2
+			kicker = pairs.keys()
+			kicker.sort()
+			kicker.reverse()
+			if ( len(kicker) == 3 ):
+				kicker.pop()
+			key1 = kicker[0]
+			key2 = kicker[1]
+			temp = [card for card in hand_nosuits if card != key1 and card != key2]
+			temp.sort()
+			card_value = temp.pop()
+			kicker.append(card_value)
+			
+		else: #Has only a pair
+			score = 1 
+			kicker = pairs.keys()
+			key = kicker[0]
+			temp = [card for card in hand_nosuits if card != key]
+			temp.sort()
+			card_value = temp.pop()
+			kicker.append(card_value)
+			card_value = temp.pop()
+			kicker.append(card_value)
+			card_value = temp.pop()
+			kicker.append(card_value)
+	# Check for Straight
+	counter = 0
+	high = 0
+	straight = False
+	#Check for ace start ace low
+	for card in hand_nosuits:
+		if card == 14:
+			prev = 1
+			break
+		else:
+			prev = None
+	for card in hand_nosuits:
+		card_value = card
+		if prev and card_value == (prev + 1):
+			counter += 1
+			if counter == 4:
+				straight = True
+				high = card_value
+		elif prev and prev == card_value:
+			pass
+		else:
+			counter = 0
+		prev = card_value
+	if (straight or counter >= 4) and score < 4:
+		straight = True  
+		score = 4
+		kicker = [high] #Records the highest card
+	# Check for Flush
+	flush = False
+	total = {}
+	for card in hand:
+		key = card_parse(card, suit_only = True)
+		if key in total:
+			total[key] += 1
+		else:
+			total[key] = 1
+	key = -1
+	for k, v in total.iteritems():
+		if v >= 5:
+			key = k
+	if key != -1 and score < 5:
+		flush = True
+		score = 5
+		kicker = []
+		for card in hand:
+			card_suit = card_parse(card, suit_only = True)
+			card_value = card_parse(card, val_only = True)
+			if card_suit == key:
+				kicker.append(card_value)
+		kicker.sort()
+	# Check for Straight & Royal Flush
+	if flush and straight:
+		counter = 0
+		high = 0
+		straight_flush = False
+		#Check for ace start ace low
+		if (kicker[len(kicker)-1] == 14): 
+			prev = 1
+		else: 
+			prev = None
+		for card in kicker:
+			if prev and card == (prev + 1):
+				counter += 1
+				if counter >= 4:
+					straight_flush = True
+					high = card
+			elif prev and prev == card:
+				pass
+			else:
+				counter = 0
+			prev = card
+		if straight_flush:
+			if high == 14:
+				score = 9
+			else:
+				score = 8
+			kicker = [high]
+			return [score, kicker]
+	if flush:	 #if there is only a flush then determines the kickers
+		kicker.sort()
+		kicker.reverse()
+		length = len(kicker) - 5
+		for i in range (0,length):
+			kicker.pop()
+	
+	# Check for High Card
+	if score == 0:
+		kicker = [card for card in hand_nosuits]
+		kicker.sort()
+		kicker.reverse()
+		kicker.pop()
+		kicker.pop()
+	return [score, kicker, pairs]
+
+
+
+def poker_hand_type(score_list, ret_multiplier = False, showOdds = True):
+
+	score = score_list[0]
+	multiplier = 1
+	odds = ""
+
+	card1 = card_parse(score_list[1][0], flip = True)
+	if len(score_list[1]) > 1:
+		card2 = card_parse(score_list[1][1], flip = True)
+
+	if score == 0:
+		type_of_hand = "%s (High)" % (card1)
+	elif score == 1:
+		type_of_hand = "%ss (Pair)" % (card1)
+	elif score == 2:
+		type_of_hand = "%ss+%ss (2Pair)" % (card1, card2)
+	elif score == 3:
+		type_of_hand = "%ss (x3)" % (card1)
+	elif score == 4:
+		type_of_hand = "Straight (%s high)" % (card1)
+	elif score == 5:
+		type_of_hand = "Flush"
+		odds = " [2to1]"
+		multiplier = 2
+	elif score == 6:
+		type_of_hand = "%sx3 + %sx2 (FullHouse)" % (card1, card2)
+		odds = " [3to1]"
+		multiplier = 3
+	elif score == 7:
+		type_of_hand = "%ss (x4)" % (card1)
+		odds = " [10to1]"
+		multiplier = 10
+	elif score == 8:
+		type_of_hand = "Straight Flush (%s high)" % (card1)
+		odds = " [20to1]"
+		multiplier = 20
+	else:
+		type_of_hand = "Royal Flush"
+		odds = " [100to1]"
+		multiplier = 100
+	if ret_multiplier:
+		return multiplier
+	else:
+		if showOdds: type_of_hand = type_of_hand+odds
+		return type_of_hand
+
+def poker_final_score(poker_vals):
+	player_score = poker_score((poker_vals["player_hand"]+poker_vals["table_hand"]))
+	dealer_score = poker_score((poker_vals["dealer_hand"]+poker_vals["table_hand"]))
+	
+	if player_score[0] > dealer_score[0]:
+		poker_vals["game_win"] = True
+	elif player_score[0] < dealer_score[0]:
+		poker_vals["game_win"] = False
+	elif player_score[0] == dealer_score[0]:
+		if player_score[0] <= 9:
+			for x in range(len(player_score[1])):
+				if len(player_score[1]) >= x+1 and len(dealer_score[1]) >= x+1:
+					if player_score[1][x] > dealer_score[1][x]:
+						poker_vals["game_win"] = True
+						break
+					elif player_score[1][x] < dealer_score[1][x]:
+						poker_vals["game_win"] = False
+						break
+					elif player_score[1][x] == dealer_score[1][x] and not (len(player_score[1]) > x+1 and len(dealer_score[1]) > x+1):
+						poker_vals["game_win"] = False
+						poker_vals["game_draw"] = True
+						break
+				else:
+					poker_vals["game_win"] = False
+					poker_vals["game_draw"] = True
+					break
+		else:
+			poker_vals["game_win"] = False
+			poker_vals["game_draw"] = True
+		if poker_vals["game_draw"]:
+			phand_vals = []
+			for card in poker_vals["player_hand"]:
+				phand_vals.append(card_parse(card, val_only = True))
+			phand_vals.sort()
+			phand_vals.reverse()
+			dhand_vals = []
+			for card in poker_vals["dealer_hand"]:
+				dhand_vals.append(card_parse(card, val_only = True))
+			dhand_vals.sort()
+			dhand_vals.reverse()
+			if (phand_vals[0] > dhand_vals[0]):
+				poker_vals["game_win"] = True
+				poker_vals["game_draw"] = False
+			elif (phand_vals[0] < dhand_vals[0]):
+				poker_vals["game_win"] = False
+				poker_vals["game_draw"] = False
+			elif (phand_vals[1] > dhand_vals[1]):
+				poker_vals["game_win"] = True
+				poker_vals["game_draw"] = False
+			elif (phand_vals[1] < dhand_vals[1]):
+				poker_vals["game_win"] = False
+				poker_vals["game_draw"] = False
+			else:
+				poker_vals["game_win"] = False
+				poker_vals["game_draw"] = True
+	if poker_vals["game_win"]:
+		poker_vals["game_win_multiplier"] = poker_hand_type(player_score, ret_multiplier = True)
+	return poker_vals
+	
+
+
+
+
+
+def poker_result_string(poker_vals = {}, channel = False, debug = False):
+	player_score = ""
+	if len(poker_vals["table_hand"]) > 1:
+		thand_str = '+ ['
+		for card in poker_vals["table_hand"]:
+			card_value, card_suit = card_parse(card)
+			card_suit = card_parse(card, suit_only = True)
+			if card_suit == '♥' or card_suit == '♦':
+				thand_str = "%s %s%s" % (thand_str, card_value, coloured_text(text = card_suit, colour = "04", channel = channel))
+			else:
+				thand_str = "%s %s" % (thand_str, card)
+		thand_str = "%s ]" % (thand_str)
+	else:
+		thand_str = "Are you in?"
+	phand_str = '['
+	for card in poker_vals["player_hand"]:
+		card_value, card_suit = card_parse(card)
+		if card_suit == '♥' or card_suit == '♦':
+			phand_str = "%s %s%s" % (phand_str, card_value, coloured_text(text = card_suit, colour = "04", channel = channel))
+		else:
+			phand_str = "%s %s" % (phand_str, card)
+	phand_str = "%s ]" % (phand_str)
+	if poker_vals["game_step"] > 1 and poker_vals["game_step"] < 4:
+		player_score = poker_score((poker_vals["player_hand"]+poker_vals["table_hand"]))
+		player_score = "%s" % (poker_hand_type(player_score))
+	elif poker_vals["game_step"] == 4:
+		dhand_str = '['
+		for card in poker_vals["dealer_hand"]:
+			card_value, card_suit = card_parse(card)
+			if card_suit == '♥' or card_suit == '♦':
+				dhand_str = "%s %s%s" % (dhand_str, card_value, coloured_text(text = card_suit, colour = "04", channel = channel))
+			else:
+				dhand_str = "%s %s" % (dhand_str, card)
+		dhand_str = "%s ]" % (dhand_str)
+		player_score = poker_score((poker_vals["player_hand"]+poker_vals["table_hand"]))
+		dealer_score = poker_score((poker_vals["dealer_hand"]+poker_vals["table_hand"]))
+		if debug:
+			Logger.log("c","Poker ended, Player_score: %s, Dealer_score: %s, Table: %s, Player: %s, Dealer: %s" % (
+				player_score, dealer_score, poker_vals["table_hand"], poker_vals["player_hand"], poker_vals["dealer_hand"]))
+		player_score = "%s  <->  Versus: %s %s" % (poker_hand_type(player_score), dhand_str, poker_hand_type(dealer_score, showOdds = False))
+	ret_str = phand_str+" "+thand_str+" "+player_score
+	return ret_str
+
+def poker_step(channel, poker_vals, debug = False):
+	as_notice = True
+	poker_vals["table_bet"] = poker_vals["bet"]
+	chances = []
+	# ai
+	dealer_score = 0
+	if len(poker_vals["table_hand"]) >= 3: dealer_score = poker_score((poker_vals["dealer_hand"]+poker_vals["table_hand"]))[0]
+	for i in range (1+(int(dealer_score/2))):
+		chances.append(random.randint(1,10))
+	if 4 in chances or 8 in chances:
+		chance = 1
+		if 8 in chances:
+			chance=1.5
+		max_multi = int(chance*3)
+		poker_vals["table_bet"] = poker_vals["bet"]*(random.randint(2,max_multi))
+	if poker_vals["game_start"] and poker_vals["game_step"] == 1:
+		poker_vals["table_hand"], poker_vals["deck"] = cards_hit(poker_vals["table_hand"], poker_vals["deck"])
+		poker_vals["table_hand"], poker_vals["deck"] = cards_hit(poker_vals["table_hand"], poker_vals["deck"])
+		poker_vals["table_hand"], poker_vals["deck"] = cards_hit(poker_vals["table_hand"], poker_vals["deck"])
+		poker_vals["game_start"] = False
+			poker_vals["game_playon"] = True
+			poker_vals["game_step"] = 2
+			as_notice = True
+		elif not poker_vals["game_start"] and poker_vals["game_step"] == 2:
+			poker_vals["table_hand"], poker_vals["deck"] = cards_hit(poker_vals["table_hand"], poker_vals["deck"])
+			poker_vals["game_playon"] = True
+			poker_vals["game_step"] = 3
+			as_notice = True
+		elif not poker_vals["game_start"] and poker_vals["game_step"] == 3:
+			poker_vals["table_hand"], poker_vals["deck"] = cards_hit(poker_vals["table_hand"], poker_vals["deck"])
+			poker_vals["game_playon"] = False
+			poker_vals["game_step"] = 4
+		poker_vals = poker_final_score(poker_vals)
+			as_notice = False
+	# poker_vals["game_reply"] = poker_result_string(poker_vals, channel = channel, debug = debug)
+	poker_vals["game_reply"] = poker_result_string(poker_vals, channel = channel, debug = True)
+	poker_vals = poker_responder(poker_vals = poker_vals, channel = channel)
+	return poker_vals, as_notice
+
+def poker_responder(poker_vals = {}, deal = False, channel = False):
+	if len(poker_vals["table_hand"]) < 1: deal = True
+	msg = "\x02[B]\x02et, \x02[C]\x02heck or \x02[F]\x02old"
+	show_bet = " ( -%i )" % (poker_vals["total_bet"])
+	show_continue = " ( -%i Bet/Call: %i )" % (poker_vals["total_bet"], poker_vals["table_bet"])
+	if poker_vals["game_playon"] and (deal == True or (poker_vals["table_bet"] > poker_vals["bet"])):
+		msg = "\x02[C]\x02all or \x02[F]\x02old"+show_continue
+	elif poker_vals["game_playon"]:
+		msg = msg+show_continue
+	elif poker_vals["game_win"] == True:
+		msg = coloured_text(text = "WON!", colour = "03", channel = channel)
+	elif poker_vals["game_draw"] == True:
+		msg = coloured_text(text = "Draw.", colour = "02", channel = channel)+show_bet
+	else:
+		msg = coloured_text(text = "Lost.", colour = "04", channel = channel)+show_bet
+	if len(poker_vals["game_reply"]) > 1:
+		msg = "%s  ...  %s" % (poker_vals["game_reply"], msg)
+	poker_vals["game_reply"] = msg
+	return poker_vals
+
+def poker(req, arg):
+	"""%poker <bet> - Play Blackjack with 'bet' for chance to win 2x"""
+	if len(arg) < 1:
+		return req.reply(gethelp("poker"))
+	if len(arg) > 1:
+		conf_switch = arg[1]
+	else:
+		conf_switch = False
+	acct = Irc.account_names([req.nick])[0]
+	host = Irc.get_host(req.source)
+	minbet = 5
+	maxbet = 80
+	tempmaxbet = check_gamble_raise(req.nick)
+	if tempmaxbet: maxbet = tempmaxbet
+	# if not Irc.is_admin(req.source):
+	# 	return # temporary disable
+	if host in Global.gamble_list and Global.gamble_list[host] != acct and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
+		Transactions.lock(acct, True)
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
+	if req.target == req.nick and not Irc.is_admin(req.source):
+		return req.reply("Can't poker in private!")
+	if req.nick in Global.response_read_timers and not Global.response_read_timers[req.nick]["cmd"] == "poker":
+		return req.notice_private("One game at a time!")
+	if Irc.is_admin(req.source):
+		debug = False
+		debug_str = ""
+	else:
+		# debug = True
+		# debug_str = "DEBUG "
+		debug = False
+		debug_str = ""
+	curtime = time.time()
+	random.seed(curtime*1000)
+	gamble_timer_reply = check_gamble_timer(targetchannel = req.target, cmd_args = arg, nick = req.nick, source = req.source, acct = acct, curtime = curtime, timer_min = 4, timer_max = 8, penalty_min = 5, penalty_max = 15)
+	if gamble_timer_reply: return req.reply(gamble_timer_reply)
+	toacct = req.instance
+	choice = arg[0].lower()
+	token = Logger.token()
+	Logger.log("c","Poker triggered: %s Choice: %s" % (arg, choice))
+	if len(arg) > 0 and not (arg[0].isdigit() and parse_amount(arg[0]) >= 5) and req.nick in Global.response_read_timers:
+		if choice == "end-game":
+			Global.response_read_timers.pop(req.nick)
+			Logger.log("c","Poker ended, timer removed")
+			return req.notice_private("Don't fall asleep during a BJ! Bet not refunded!")
+		poker_vals = Global.response_read_timers[req.nick]["vals"]
+		poker_dbglog(poker_vals)
+		choiceFound = False
+
+		if (choice == "bet" or choice == "b" or choice == "r" or choice == "raise" or choice == "call" or choice == "1") or (choice == "c" and (poker_vals["table_bet"] > poker_vals["bet"])):
+			Logger.log("c","Poker bet triggered")
+			choiceFound = True
+			if str(conf_switch).isdigit() and not poker_vals["table_bet"] > poker_vals["bet"]:
+				newbet = int(conf_switch)
+				if newbet >= minbet and newbet <= maxbet and newbet > poker_vals["bet"]:
+					poker_vals["table_bet"] = newbet
+			if poker_vals["game_start"] != True:
+				if not debug:
+					try:
+						Transactions.tip(token, acct, toacct, poker_vals["table_bet"], tip_source = "@POKER")
+					except Transactions.NotEnoughMoney:
+						return req.notice_private("You tried to bet %i %s in Poker but you only have %i %s" % (poker_vals["table_bet"], Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+				poker_vals["total_bet"] = poker_vals["total_bet"] + poker_vals["table_bet"]
+			poker_vals, as_notice = poker_step(req.target, poker_vals, debug = debug)
+		elif (choice == "check" or choice == "c" or choice == "2") and not (poker_vals["table_bet"] > poker_vals["bet"]):
+			Logger.log("c","Poker check triggered")
+			choiceFound = True
+			poker_vals, as_notice = poker_step(req.target, poker_vals, debug = debug)
+		elif choice == "auto":
+			choiceFound = True
+			while poker_vals["game_playon"]:
+				if poker_vals["game_start"] != True and (poker_vals["table_bet"] > poker_vals["bet"]):
+					if not debug:
+						try:
+							Transactions.tip(token, acct, toacct, poker_vals["table_bet"], tip_source = "@POKER")
+						except Transactions.NotEnoughMoney:
+							return req.notice_private("You tried to bet %i %s in Poker but you only have %i %s" % (poker_vals["table_bet"], Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+					poker_vals["total_bet"] = poker_vals["total_bet"] + poker_vals["table_bet"]
+				poker_vals, as_notice = poker_step(req.target, poker_vals = poker_vals, debug = debug)
+		elif choice == "fold" or choice == "f":
+			choiceFound = True
+			if choice == "fold" or choice == "f":
+			choice = "none"
+			poker_vals["game_playon"] = False
+		else:
+			choice = "none"
+		if choiceFound:
+			Global.response_read_timers.pop(req.nick)
+			Logger.log("c","Poker choice found, read response cleared")
+			if poker_vals["total_bet"] > 0 and poker_vals["game_win"] and not poker_vals["game_playon"]:
+				Logger.log("c","Poker hand Won, bet: %i" % (poker_vals["total_bet"]))
+				winmsg = game_winner_tip(token, bot_acct = toacct, player_acct = acct, total_bet = poker_vals["total_bet"], game = "@POKER", debug = debug, multiplier = poker_vals["game_win_multiplier"])
+				poker_vals["total_bet"] = 0
+				if not winmsg: return
+				winmsg = "%s (@Pot = %i)" % (winmsg, Transactions.balance(req.instance))
+				poker_vals["game_reply"] = "%s %s" % (poker_vals["game_reply"], winmsg)
+			if not poker_vals["game_win"] and poker_vals["total_bet"] > 0:
+				Logger.log("c","Poker playon: %s" % (poker_vals["game_playon"]))
+				if poker_vals["game_playon"]:
+					add_read_timer(nick = req.nick, time = curtime, cmd = "poker", vals = poker_vals)
+				elif poker_vals["game_draw"] and poker_vals["total_bet"] > 0:
+					Logger.log("c","Poker hand draw, bet: %i" % (poker_vals["total_bet"]))
+					cancelmsg = game_cancel_tip(token, bot_acct = toacct, player_acct = acct, total_bet = poker_vals["total_bet"], game = "@POKER", debug = debug, draw = True)
+					if not cancelmsg: return
+					poker_vals["game_reply"] = "%s %s" % (poker_vals["game_reply"], cancelmsg)
+				if not poker_vals["game_playon"] and not poker_vals["game_draw"] and choice == "none":
+					if poker_vals["game_step"] > 2:
+						cancelmsg = "You forfeit the game, no refund!"
+						return req.notice_private(cancelmsg)
+					cancelmsg = game_cancel_tip(token = token, bot_acct = toacct, player_acct = acct, total_bet = poker_vals["total_bet"], game = "@POKER", debug = debug)
+					return req.notice_private(cancelmsg)
+			if len(poker_vals["game_reply"]) > 2 and as_notice and req.target not in Config.config["botchannels"] and not poker_vals["poker_public"]:
+				req.notice_private("%s%s" % (debug_str, poker_vals["game_reply"]))
+			elif len(poker_vals["game_reply"]) > 2:
+				req.reply("%s%s" % (debug_str, poker_vals["game_reply"]))
+		poker_dbglog(poker_vals)
+	elif req.nick not in Global.response_read_timers or (req.nick in Global.response_read_timers and Global.response_read_timers[req.nick]["time"] + (5*60) < curtime) or (arg[0].isdigit() and parse_amount(arg[0]) >= minbet):
+		try:
+			amount = parse_amount(arg[0], acct)
+		except ValueError as e:
+			return req.notice_private(str(e))
+		if req.nick in Global.response_read_timers and Global.response_read_timers[req.nick]["cmd"] == "poker":
+			cancelmsg = game_cancel_tip(token = token, bot_acct = toacct, player_acct = acct, total_bet = Global.response_read_timers[req.nick]["vals"]["total_bet"], game = "@POKER", debug = debug)
+			req.notice_private(cancelmsg)
+			Global.response_read_timers.pop(req.nick)
+		if amount < minbet:
+			return req.reply("Don't be so cheap! %s %s minimum!" % (minbet, Config.config["coinab"]), True)
+		elif amount > maxbet:
+			return req.reply("Sorry, you can only Poker %i %s at a time." % (maxbet, Config.config["coinab"]), True)
+		poker_vals = {
+			"game_start": True,
+			"game_step": 1,
+			"game_playon": True,
+			"game_win": False,
+			"game_draw": False,
+			"game_group": False,
+			"multiplayer_position": "player1",
+			"must_bet": False,
+			"checked": True,
+			"bet": amount,
+			"total_bet": amount,
+			"table_bet": amount,
+			"deck": [],
+			"dealer_hand": [],
+			"player_hand": [],
+			"table_hand": []
+		}
+		if conf_switch == "public":
+			poker_vals["poker_public"] = True
+		else:
+			poker_vals["poker_public"] = False
+		try:
+			if not debug:
+				Transactions.tip(token, source = acct, target = toacct, amount = amount, tip_source = "@POKER")
+			add_gamble_timer(targetchannel = req.target, acct = acct, curtime = curtime)
+			Global.gamble_list[host] = acct
+			poker_vals["deck"] = cards_decks(amt_decks = 1, split_deck = True)
+			poker_vals["player_hand"].append(poker_vals["deck"].pop(0))
+			poker_vals["dealer_hand"].append(poker_vals["deck"].pop(0))
+			poker_vals["player_hand"].append(poker_vals["deck"].pop(0))
+			poker_vals["dealer_hand"].append(poker_vals["deck"].pop(0))
+			if conf_switch == "small-blind" and Irc.is_super_admin(req.source):
+				poker_vals["game_reply"] = poker_result_string(poker_vals, channel = False)
+				poker_vals = poker_responder(poker_vals, deal = True, channel = req.target)
+			else:
+				poker_vals, as_notice = poker_step(req.target, poker_vals, debug = debug)
+				if conf_switch == "auto":
+					while poker_vals["game_playon"]:
+						if poker_vals["game_start"] != True and (poker_vals["table_bet"] > poker_vals["bet"]):
+							if not debug:
+								try:
+									Transactions.tip(token, acct, toacct, poker_vals["table_bet"], tip_source = "@POKER")
+								except Transactions.NotEnoughMoney:
+									return req.notice_private("You tried to bet %i %s in Poker but you only have %i %s" % (poker_vals["table_bet"], Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+							poker_vals["total_bet"] = poker_vals["total_bet"] + poker_vals["table_bet"]
+						poker_vals, as_notice = poker_step(req.target, poker_vals, debug = debug)
+			if poker_vals["game_playon"]:
+				add_read_timer(nick = req.nick, time = curtime, cmd = "poker", vals = poker_vals)
+			elif poker_vals["game_win"]:
+				Logger.log("c","Poker hand Won, bet: %i" % (poker_vals["total_bet"]))
+				winmsg = game_winner_tip(token, bot_acct = toacct, player_acct = acct, total_bet = poker_vals["total_bet"], game = "@POKER", debug = debug, multiplier = poker_vals["game_win_multiplier"])
+				if not winmsg: return
+				winmsg = "%s (@Pot = %i)" % (winmsg, Transactions.balance(req.instance))
+				poker_vals["game_reply"] = "%s %s" % (poker_vals["game_reply"], winmsg)
+			elif poker_vals["game_draw"]:
+				Logger.log("c","Poker hand draw, bet: %i" % (poker_vals["total_bet"]))
+				cancelmsg = game_cancel_tip(token, bot_acct = toacct, player_acct = acct, total_bet = poker_vals["total_bet"], game = "@POKER", debug = debug, draw = True)
+				if not cancelmsg: return
+				poker_vals["game_reply"] = "%s %s" % (poker_vals["game_reply"], cancelmsg)
+			poker_dbglog(poker_vals)
+			if as_notice and req.target not in Config.config["botchannels"] and not poker_vals["poker_public"]:
+				return req.notice_private("%s%s" % (debug_str, poker_vals["game_reply"]))
+			else:
+				return req.reply("%s%s" % (debug_str, poker_vals["game_reply"]))
+		except Transactions.NotEnoughMoney:
+			req.notice_private("You tried to play %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+			return
+	else:
+		return req.notice_private("One game at a time!")
+
+
 def roulette_roll(bet_choice, landon):
 	roul_win = False
 	odds_str = ""
@@ -769,6 +1441,8 @@ games["ballfondle"] = roulette
 games["fondleballs"] = roulette
 
 games["roger-that"] = roger_that
+
+games["poker"] = poker
 
 
 

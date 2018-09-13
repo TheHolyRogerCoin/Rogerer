@@ -134,7 +134,7 @@ def message(instance, source, target, text):
 				auto_or_text = "auto"
 				time_multiplier = (60)
 			t = time.time()
-			if Global.response_read_timers[theReadTimer]["time"] + 40 > t:
+			if Global.response_read_timers[theReadTimer]["time"] + 90 > t:
 				commandline = "%s %s" % (Global.response_read_timers[theReadTimer]["cmd"], text)
 			elif Global.response_read_timers[theReadTimer]["time"] + (10*time_multiplier) > t:
 				commandline = "%s %s" % (Global.response_read_timers[theReadTimer]["cmd"], auto_or_text)
