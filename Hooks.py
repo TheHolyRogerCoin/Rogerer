@@ -128,13 +128,15 @@ def message(instance, source, target, text):
 			if nick not in Global.response_read_timers and "@roger_that" in Global.response_read_timers:
 				theReadTimer = "@roger_that"
 				auto_or_text = text
+				time_multiplier = (60*60)
 			else:
 				theReadTimer = nick
 				auto_or_text = "auto"
+				time_multiplier = (60)
 			t = time.time()
 			if Global.response_read_timers[theReadTimer]["time"] + 40 > t:
 				commandline = "%s %s" % (Global.response_read_timers[theReadTimer]["cmd"], text)
-			elif Global.response_read_timers[theReadTimer]["time"] + (10*60) > t:
+			elif Global.response_read_timers[theReadTimer]["time"] + (10*time_multiplier) > t:
 				commandline = "%s %s" % (Global.response_read_timers[theReadTimer]["cmd"], auto_or_text)
 				Logger.log("c", "%s: timer expired (auto) for: %s on: %s, cmd: %s" % (instance, nick, theReadTimer, Global.response_read_timers[theReadTimer]["cmd"]))
 			else:

@@ -38,7 +38,7 @@ def check_gamble_timer(targetchannel, cmd_args, nick, source, acct, curtime, tim
 		else:
 			timeUnit = "minutes"
 		if not to_admin:
-			r_str = "Help is available @ begambleaware.org. "
+			r_str = "Roger safely - begambleaware.org. "
 		else:
 			str_botchannel = ""
 			r_str = ""
@@ -101,10 +101,10 @@ def roger_that(req, arg):
 			except ValueError as e:
 				return req.notice_private(str(e))
 		if "@roger_that" not in Global.gamble_list or Irc.is_super_admin(req.source):
-			Global.gamble_list["@roger_that"] = amount
 			for welcome_channel in Config.config["welcome_channels"]:
 				rt_timer = check_gamble_timer(targetchannel = welcome_channel, cmd_args = [], nick = False, source = req.source, acct = acct, curtime = curtime, timer_min = 4, timer_max = 8, penalty_min = 5, penalty_max = 15, to_admin = True)
 				if rt_timer: return req.reply(rt_timer)
+				Global.gamble_list["@roger_that"] = amount
 				add_gamble_timer(welcome_channel, acct, curtime)
 				if arg[0] == "debug":
 					req.reply(coloured_text(text = "ROGER?!???!", rainbow = True, channel = welcome_channel))
@@ -112,7 +112,7 @@ def roger_that(req, arg):
 					Irc.instance_send(req.instance, ("PRIVMSG", welcome_channel, coloured_text(text = "ROGER?!???!", rainbow = True, channel = welcome_channel)))
 				add_read_timer("@roger_that", curtime, cmd = "roger-that")
 		else:
-			req.reply("Game in progress.")
+			req.reply("Game in progress. Use 'end-game'.")
 		return
 	elif "@roger_that" not in Global.gamble_list:
 		return req.reply(gethelp("roger-that"))
@@ -125,7 +125,7 @@ def roger_that(req, arg):
 		amount = Global.gamble_list["@roger_that"]
 		Global.gamble_list["@roger_that_prevwin"] = toacct
 		Global.gamble_list.pop("@roger_that")
-		Global.response_read_timers.pop("@roger_that")
+		if "@roger_that" in Global.response_read_timers: Global.response_read_timers.pop("@roger_that")
 		Global.gamble_list[host] = toacct
 		Transactions.tip(token, acct, toacct, amount, tip_source = "@ROGER_THAT")
 		won_string = "%s %i %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), amount, coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
@@ -203,21 +203,31 @@ def lotto(req, arg):
 		req.notice_private("You tried to play %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
 		return
 
-
-
-def bj_deal():
+def cards_decks(amt_decks = 1, split_deck = False):
 	ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 	suits = ['♠','♦','♥','♣']
 	deck = [rank+suit for suit in suits for rank in ranks]
 	multi_deck = []
-	for deckno in range(4):
+	for deckno in range(amt_decks):
 		onedeck = deck
 		for shuffle in range(random.randint(5, 20)):
 			random.shuffle(onedeck)
 		multi_deck += onedeck
 	for shuffle in range(random.randint(5, 20)):
 		random.shuffle(multi_deck)
-	deck = multi_deck[-len(multi_deck)/2:]
+	if split_deck:
+		deck = multi_deck[-len(multi_deck)/2:]
+	else:
+		deck = multi_deck
+	return deck
+
+def cards_hit(hand, deck):
+	card = deck.pop(0)
+	hand.append(card)
+	return hand,deck
+
+def bj_deal():
+	deck = cards_decks(amt_decks = 4, split_deck = True)
 	phand = []
 	dhand = []
 	phand.append(deck.pop(0))
@@ -246,10 +256,7 @@ def bj_total(hand, show_softhand = False):
 		return total, softhand
 	return total
 
-def bj_hit(hand, deck):
-	card = deck.pop(0)
-	hand.append(card)
-	return hand,deck
+
 
 def bj_result_string(dealer_hand, player_hand, player_total = False, hand_softhand = False, dealer_total = False, channel = False):
 	ptotal = ""
@@ -318,12 +325,12 @@ def bj_score(req, dealer_hand, player_hand, deal = False, stand = False, split =
 	elif player_total > 21:
 		msg = "%s You %s your load." % (coloured_text(text = ":<", colour = "04", channel = req.target), coloured_text(text = "busted", colour = "04", channel = req.target))
 	elif dealer_total > 21:	   
-		msg = "%s his load!" % (coloured_text(text = "Dealer busts", colour = "03", channel = req.target))
+		msg = "Dealer %s his load!" % (coloured_text(text = "busts", colour = "03", channel = req.target))
 		hand_win = True
 	elif player_total < dealer_total:
-		msg ="%s Dealer %s closer" % (coloured_text(text = ":<", colour = "04", channel = req.target), coloured_text(text = "came", colour = "04", channel = req.target))
+		msg ="%s Dealer %s" % (coloured_text(text = ":<", colour = "04", channel = req.target), coloured_text(text = "came closer.", colour = "04", channel = req.target))
 	elif player_total > dealer_total:   
-		msg = "You %s closer!" % (coloured_text(text = "came", colour = "03", channel = req.target))
+		msg = "You %s" % (coloured_text(text = "came closer!", colour = "03", channel = req.target))
 		hand_win = True
 	elif player_total == dealer_total:   
 		msg = "%s Draw" % (coloured_text(text = ":S", colour = "02", channel = req.target))
@@ -347,23 +354,23 @@ def bj_score(req, dealer_hand, player_hand, deal = False, stand = False, split =
 	return hand_win, reply, hand_playon, hand_draw, hand_payout_bj, as_notice
 
 def bj_player_hit(player_hand, dealer_hand, deck, req, split, hand1 = False):
-	player_hand, deck = bj_hit(player_hand, deck)
+	player_hand, deck = cards_hit(player_hand, deck)
 	while (not split or not hand1) and bj_total(player_hand) >= 21 and bj_total(dealer_hand) < 17:
-		dealer_hand, deck = bj_hit(dealer_hand, deck)
+		dealer_hand, deck = cards_hit(dealer_hand, deck)
 	hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, as_notice = bj_score(req, dealer_hand, player_hand, split = split, hand1 = hand1)
 	return hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, player_hand, dealer_hand, deck, as_notice
 
 def bj_player_stand(player_hand, dealer_hand, deck, req, split, hand1 = False, game_num = 1, force_dealerReveal = False):
 	while (not split or not (hand1 and game_num == 1)) and bj_total(dealer_hand) < 17:
-		dealer_hand, deck = bj_hit(dealer_hand, deck)
+		dealer_hand, deck = cards_hit(dealer_hand, deck)
 	hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, as_notice = bj_score(req, dealer_hand, player_hand, split = split, stand = True, hand1 = hand1, force_dealerReveal = force_dealerReveal)
 	return hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, player_hand, dealer_hand, deck
 
 def bj_player_auto(player_hand, dealer_hand, deck, req, split, hand1 = False):
 	while bj_total(player_hand) < 17:
-		player_hand, deck = bj_hit(player_hand, deck)
+		player_hand, deck = cards_hit(player_hand, deck)
 	while (not split or not hand1) and bj_total(dealer_hand) < 17:
-		dealer_hand, deck = bj_hit(dealer_hand, deck)
+		dealer_hand, deck = cards_hit(dealer_hand, deck)
 	hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, as_notice = bj_score(req, dealer_hand, player_hand, split = split, stand = True, hand1 = hand1)
 	return hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, player_hand, dealer_hand, deck
 
@@ -492,8 +499,8 @@ def bj(req, arg):
 				bet2 = bet
 				bj_split = True
 				player_hand2 = [player_hand.pop(1)]
-				player_hand, deck = bj_hit(player_hand, deck)
-				player_hand2, deck = bj_hit(player_hand2, deck)
+				player_hand, deck = cards_hit(player_hand, deck)
+				player_hand2, deck = cards_hit(player_hand2, deck)
 				hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, as_notice = bj_score(req, dealer_hand, player_hand, split = bj_split, hand1 = True)
 			except Transactions.NotEnoughMoney:
 				return req.notice_private("You tried to split on %i %s but you only have %i %s" % (bet, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
@@ -543,7 +550,7 @@ def bj(req, arg):
 						return req.notice_private("Bot ran out of money to return bet!")
 				if not hand_playon and not hand2_playon and not hand_draw and choice == "none":
 					cancelmsg = bj_cancel(token = token, bot_acct = toacct, player_acct = acct, bet = bet, bet2 = bet2)
-					return req.notice_private("%s  %s" % hand_reply, cancelmsg)
+					return req.notice_private("%s  %s" % (hand_reply, cancelmsg))
 				if len(hand_reply) > 2 and as_notice and req.target not in Config.config["botchannels"] and not bj_public:
 					req.notice_private(hand_reply)
 				elif len(hand_reply) > 2:
@@ -580,7 +587,6 @@ def bj(req, arg):
 			Transactions.tip(token, acct, toacct, amount, tip_source = "@BLACKJACK")
 			add_gamble_timer(targetchannel = req.target, acct = acct, curtime = curtime)
 			Global.gamble_list[host] = acct
-			choice = 0
 			dealer_hand, player_hand, deck = bj_deal()
 			if conf_switch == "auto" and not bj_total(dealer_hand) == 21 and not bj_total(player_hand) == 21:
 				as_notice = False
@@ -710,8 +716,14 @@ def roulette(req, arg):
 		return req.reply("Sorry, only %i %s at a time." % (maxbet, Config.config["coinab"]), True)
 	add_gamble_timer(targetchannel = req.target, acct = acct, curtime = curtime)
 	Global.gamble_list[host] = acct
-	landon = random.randint(0, 36)
-	reply = "Fondling balls... landed on %i" % (landon)
+	roulette_nums = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
+	landon1 = random.choice(roulette_nums)
+	rindex = roulette_nums.index(landon1)
+	if rindex == 36: rindex = -1
+	landon2 = roulette_nums[rindex+1]
+	landon3 = roulette_nums[rindex+2]
+	reply = "Fondling balls.. %i .. %i .. landed on %i" % (landon1, landon2, landon3)
+	landon = landon3
 	try:
 		Transactions.tip(token, acct, toacct, total_bet_amt, tip_source = "@ROULETTE")
 		for i in range(bet_count):

@@ -660,11 +660,11 @@ def admin(req, arg):
 				except SyntaxError:
 					exec("Config.config " + " ".join(arg))
 					req.reply("Done")
-		elif command == "join":
+		elif command == "join" and Irc.is_super_admin(req.source):
 			Irc.instance_send(req.instance, ("JOIN", arg[0]), priority = 0.1)
-		elif command == "part":
+		elif command == "part" and Irc.is_super_admin(req.source):
 			Irc.instance_send(req.instance, ("PART", arg[0]), priority = 0.1)
-		elif command == "caches":
+		elif command == "caches" and Irc.is_super_admin(req.source):
 			acsize = 0
 			accached = 0
 			with Global.account_lock:
@@ -728,6 +728,11 @@ def admin(req, arg):
 				req.reply("locked" if Transactions.lock(arg[0]) else "not locked")
 		elif command == "update" and Irc.is_super_admin(req.source):
 			output = subprocess.check_output(["git", "pull"])
+			req.reply("%s" % (output) if output else "Failed")
+		elif command == "merge-reset" and Irc.is_super_admin(req.source) and len(arg) == 1:
+			output = subprocess.check_output(["git", "fetch"])
+			req.reply("%s" % (output) if output else "Failed")
+			output = subprocess.check_output(["git", "reset", "--hard", arg[0]])
 			req.reply("%s" % (output) if output else "Failed")
 		elif command == "host":
 			if len(arg) > 1 and arg[0] in Global.faucet_list:
