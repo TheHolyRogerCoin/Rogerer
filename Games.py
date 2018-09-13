@@ -10,17 +10,17 @@ def check_gamble_timer(targetchannel, cmd_args, nick, source, acct, curtime, tim
 	if targetchannel not in Global.gamble_list:
 		return False
 	if targetchannel not in Config.config["botchannels"]:
-		timer_min = 2*timer_min
-		timer_max = 2*timer_max
-		penalty_min = 3*penalty_min
-		penalty_max = 3*penalty_max
+		timer_min = 60*timer_min
+		timer_max = 60*timer_max
+		penalty_min = 90*penalty_min
+		penalty_max = 90*penalty_max
 		str_botchannel = "Please use game commands in #RogerCasino. "
 		is_admin = False
 	else:
 		str_botchannel = ""
 		is_admin = Irc.is_admin(source)
-		if acct in Global.gamble_list[targetchannel] and Global.gamble_list[targetchannel][acct] > (curtime + timer_max + (penalty_max * 10) + (4*60*60)):
-			Global.gamble_list[targetchannel][acct] = curtime + timer_min + penalty_min
+		# if acct in Global.gamble_list[targetchannel] and Global.gamble_list[targetchannel][acct] > (curtime + timer_max + (penalty_max * 10) + (4*60*60)):
+		# 	Global.gamble_list[targetchannel][acct] = curtime + timer_min + penalty_min
 	if is_admin or acct not in Global.gamble_list[targetchannel]:
 		return False
 	if len(cmd_args) > 0 and nick in Global.response_read_timers:
@@ -320,7 +320,9 @@ def bj(req, arg):
 	toacct = req.instance
 	choice = arg[0].lower()
 	token = Logger.token()
+	Logger.log("c","BJ triggered: %s" % (arg))
 	if len(arg) > 0 and not (arg[0].isdigit() and parse_amount(arg[0]) >= 5) and req.nick in Global.response_read_timers:
+		Logger.log("c","BJ stored vals: %s" % (Global.response_read_timers[req.nick]["vals"]))
 		bj_start = Global.response_read_timers[req.nick]["vals"]["bj_start"]
 		bj_public = Global.response_read_timers[req.nick]["vals"]["bj_public"]
 		deck = Global.response_read_timers[req.nick]["vals"]["deck"]
@@ -448,7 +450,7 @@ def bj(req, arg):
 			Global.gamble_list[host] = acct
 			choice = 0
 			dealer_hand, player_hand, deck = bj_deal()
-			if conf_switch == "auto":
+			if conf_switch == "auto" and not bj_total(dealer_hand) == 21 and not bj_total(player_hand) == 21:
 				as_notice = False
 				hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, player_hand, dealer_hand, deck = bj_player_auto(player_hand = player_hand, dealer_hand = dealer_hand, deck = deck, req = req, split = False, hand1 = True)
 			else:

@@ -288,8 +288,9 @@ def faucet(req, arg):
 	host = Irc.get_host(req.source)
 	curtime = time.time()
 	random.seed(curtime*1000)
-	if host in Global.faucet_list and Global.faucet_list[host] != toacct and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
+	if validate_user(toacct) == True and host in Global.faucet_list and Global.faucet_list[host].lower() != toacct.lower() and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
 		Transactions.lock(toacct, True)
+		Logger.irclog("Locked %s for using multiple accts (Previous acct: %s, Current acct: %s)" % (req.nick, Global.faucet_list[host], toacct))
 	user_valid = validate_user(toacct)
 	if user_valid != True: 
 		if Transactions.check_exists(req.altnick) and not Transactions.lock(toacct) and not Transactions.lock(req.altnick):

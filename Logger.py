@@ -13,6 +13,9 @@ def log(spec, text):
 		for line in text.split("\n"):
 			f.write("[%s] [%s] [%f] <%s> %s\n" % (time.ctime(t), pid, t, specifier, line))
 
+def clearlog(spec, text):
+	with open(Config.config["logfile"],'w'): pass
+
 def irclog(text):
 	if Config.config.get("irclog", None):
 		for i in xrange(0, len(text), 350):
