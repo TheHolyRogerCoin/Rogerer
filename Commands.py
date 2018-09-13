@@ -706,18 +706,15 @@ def admin(req, arg):
 		elif command == "faucetreset":
 			if len(arg) > 1 and arg[0] in Global.faucet_list:
 				Global.faucet_list.pop(arg[0])
-				# Global.faucet_list[arg[0]] = 0
 				req.reply("Done")
 			elif len(arg) and arg[0] in Global.faucet_list:
 				req.reply("Faucet [%s] timer at [%s]" % (arg[0], datetime.datetime.fromtimestamp(int(Global.faucet_list[arg[0]])).strftime('%Y-%m-%d %H:%M')) if arg[0] in Global.faucet_list else "User [%s] does not exist" % (arg[0]))
 		elif command == "gamblereset":
 			if len(arg) == 2 and arg[0] in Global.gamble_list:
 				Global.gamble_list.pop(arg[0])
-				# Global.faucet_list[arg[0]] = 0
 				req.reply("Done")
 			elif len(arg) == 3 and arg[0] in Global.gamble_list and arg[1] in Global.gamble_list[(arg[0])]:
 				Global.gamble_list[(arg[0])].pop(arg[1])
-				# Global.faucet_list[arg[0]] = 0
 				req.reply("Done")
 			elif len(arg) == 2 and arg[0] in Global.gamble_list:
 				req.reply("Gamble [%s] timer at [%s]" % (arg[1], datetime.datetime.fromtimestamp(int(Global.gamble_list[(arg[0])][(arg[1])])).strftime('%Y-%m-%d %H:%M')) if arg[1] in Global.gamble_list[(arg[0])] else "User [%s] does not exist" % (arg[1]))
@@ -728,39 +725,26 @@ def admin(req, arg):
 		elif command == "readreset":
 			if len(arg) > 1 and arg[0] in Global.response_read_timers:
 				Global.response_read_timers.pop(arg[0])
-				# Global.faucet_list[arg[0]] = 0
 				req.reply("Done")
 			elif len(arg) and arg[0] in Global.response_read_timers:
 				req.reply("Read Timer: %s" % (Global.response_read_timers[arg[0]]))
 			else:
 				req.reply("Read Timers: %s" % (Global.response_read_timers))
 		elif command == "acc_cache":
-			# if len(arg) > 1 and arg[0] in Global.response_read_timers:
-			# 	Global.response_read_timers.pop(arg[0])
-			# 	# Global.faucet_list[arg[0]] = 0
-			# 	req.reply("Done")
 			if len(arg) and arg[0] in Global.account_cache:
 				req.reply("Account Cache (%s): %s" % (arg[0],Global.account_cache[arg[0]]))
 			else:
 				req.reply("Account Cache: %s" % (Global.account_cache))
 		elif command == "active_list":
-			# if len(arg) > 1 and arg[0] in Global.response_read_timers:
-			# 	Global.response_read_timers.pop(arg[0])
-			# 	# Global.faucet_list[arg[0]] = 0
-			# 	req.reply("Done")
 			if len(arg) and arg[0] in Global.active_list:
 				req.reply("Account Cache (%s): %s" % (arg[0],Global.active_list[arg[0]]))
 			else:
 				req.reply("Account Cache: %s" % (Global.active_list))
 		elif command == "svsdata":
-			# if len(arg) > 1 and arg[0] in Global.response_read_timers:
-			# 	Global.response_read_timers.pop(arg[0])
-			# 	# Global.faucet_list[arg[0]] = 0
-			# 	req.reply("Done")
-			# if len(arg) and arg[0] in Global.svsdata:
-			# 	req.reply("Account Cache (%s): %s" % (arg[0],Global.active_list[arg[0]]))
-			# else:
 			req.reply("svsdata: %s" % (Global.svsdata))
+		elif command == "empty_logfile":
+			Logger.clearlog()
+			req.reply("Log Emptied.")
 		elif command == "tipfrombot":
 			if len(arg) > 1:
 				tip(req, [arg[0], arg[1]], from_instance = True)
