@@ -1,12 +1,12 @@
 # coding=utf8
 import sys, os, subprocess, time, datetime, math, pprint, traceback, operator, random
 import Irc, Transactions, Blocknotify, Logger, Global, Hooks, Config
-from Commands import parse_amount, validate_user, coloured_text
+from Commands import parse_amount, validate_user, coloured_text, is_soak_ignored
 from collections import OrderedDict
 
 games = {}
 
-def check_gamble_timer(targetchannel, cmd_args, nick, source, acct, curtime, timer_min = 5, timer_max = 15, penalty_min = 10, penalty_max = 20):
+def check_gamble_timer(targetchannel, cmd_args, nick, source, acct, curtime, timer_min = 5, timer_max = 15, penalty_min = 10, penalty_max = 20, to_admin = False):
 	if targetchannel not in Global.gamble_list:
 		return False
 	if targetchannel not in Config.config["botchannels"]:
@@ -19,8 +19,6 @@ def check_gamble_timer(targetchannel, cmd_args, nick, source, acct, curtime, tim
 	else:
 		str_botchannel = ""
 		is_admin = Irc.is_admin(source)
-		# if acct in Global.gamble_list[targetchannel] and Global.gamble_list[targetchannel][acct] > (curtime + timer_max + (penalty_max * 10) + (4*60*60)):
-		# 	Global.gamble_list[targetchannel][acct] = curtime + timer_min + penalty_min
 	if is_admin or acct not in Global.gamble_list[targetchannel]:
 		return False
 	if len(cmd_args) > 0 and nick in Global.response_read_timers:
@@ -39,7 +37,12 @@ def check_gamble_timer(targetchannel, cmd_args, nick, source, acct, curtime, tim
 			timeUnit = "hours"
 		else:
 			timeUnit = "minutes"
-		return "%s Help is available @ begambleaware.org. Wait %.1f %s." % (str_botchannel, difference, timeUnit)
+		if not to_admin:
+			r_str = "Help is available @ begambleaware.org. "
+		else:
+			str_botchannel = ""
+			r_str = ""
+		return "%s%sWait %.1f %s." % (str_botchannel, r_str, difference, timeUnit)
 	else:
 		return False
 
@@ -71,7 +74,72 @@ def check_gamble_raise(nick = False):
 			return False
 	return False
 
+def roger_that(req, arg):
+	"""%roger-that games must be started by mods."""
+	if len(arg) < 1 or not (arg[0] == "start" or arg[0] == "debug" or arg[0] == "auto" or arg[0] == "end-game" or (len(arg[0]) >= 5 and arg[0][0:5].lower() == "roger")):
+		return
+	toacct = Irc.account_names([req.altnick])[0]
+	acct = req.instance
+	host = Irc.get_host(req.source)
+	curtime = time.time()
+	amount = 69
+	random.seed(curtime*1000)
+	if host in Global.gamble_list and Global.gamble_list[host] != toacct and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
+		Transactions.lock(toacct, True)
+	user_valid = validate_user(toacct)
+	if user_valid != True: 
+		if Transactions.check_exists(req.altnick) and not Transactions.lock(toacct) and not Transactions.lock(req.altnick):
+			toacct = req.altnick
+		else:
+			return req.notice_private(user_valid)
+	if req.target == req.nick and not Irc.is_admin(req.source):
+		return req.reply("Can't roger that in private!")
+	if is_soak_ignored(toacct):
+		return req.notice_private("You cannot participate in ROGER THAT")
 
+	if Irc.is_admin(req.source) and arg[0] == "start" or arg[0] == "debug":
+		if len(arg) > 1:
+			try:
+				amount = parse_amount(arg[1])
+				if amount > 69: amount = 69
+			except ValueError as e:
+				return req.notice_private(str(e))
+		if "@roger_that" not in Global.gamble_list or Irc.is_super_admin(req.source):
+			Global.gamble_list["@roger_that"] = amount
+			for welcome_channel in Config.config["welcome_channels"]:
+				rt_timer = check_gamble_timer(targetchannel = welcome_channel, cmd_args = [], nick = False, source = req.source, acct = acct, curtime = curtime, timer_min = 4, timer_max = 8, penalty_min = 5, penalty_max = 15, to_admin = True)
+				if rt_timer: return req.reply(rt_timer)
+				add_gamble_timer(welcome_channel, acct, curtime)
+				if arg[0] == "debug":
+					req.reply(coloured_text(text = "ROGER?!???!", rainbow = True, channel = welcome_channel))
+				else:
+					Irc.instance_send(req.instance, ("PRIVMSG", welcome_channel, coloured_text(text = "ROGER?!???!", rainbow = True, channel = welcome_channel)))
+				add_read_timer("@roger_that", curtime, cmd = "roger-that")
+		else:
+			req.reply("Game in progress.")
+		return
+	elif "@roger_that" not in Global.gamble_list:
+		return req.reply(gethelp("roger-that"))
+	elif "@roger_that_prevwin" in Global.gamble_list and Global.gamble_list["@roger_that_prevwin"] == toacct:
+		if arg[0] == "end-game": return
+		return req.notice_private("Don't be greedy! Let someone else have a go!")
+
+	token = Logger.token()
+	try:
+		amount = Global.gamble_list["@roger_that"]
+		Global.gamble_list["@roger_that_prevwin"] = toacct
+		Global.gamble_list.pop("@roger_that")
+		Global.response_read_timers.pop("@roger_that")
+		Global.gamble_list[host] = toacct
+		Transactions.tip(token, acct, toacct, amount, tip_source = "@ROGER_THAT")
+		won_string = "%s %i %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), amount, coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
+		if arg[0] == "end-game":
+			reply_str = "No one ROGER'd in time so %s claimed it! %s" % (req.altnick, won_string)
+		else:
+			reply_str = "%s ROGER'd first! %s!" % (req.altnick, won_string)
+		req.say(reply_str)
+	except Transactions.NotEnoughMoney:
+		return req.notice_private("We're all out of %s!!" % (Config.config["coinab"]))
 
 def lotto(req, arg):
 	"""%lotto <donation> <luckynumber> - Donate 'donation' (min 30) to pot for chance of winning a goldenshower (3000) if 'luckynumber' (0-100) picked (default 69)."""
@@ -125,14 +193,15 @@ def lotto(req, arg):
 			if Transactions.balance(toacct) < parse_amount("goldenshower",toacct):
 				return req.reply("We're all out of %s!!" % (Config.config["coinab"]), True)
 			Global.gamble_list["@Gamble_buildup"] = 0
-			req.say("%s played %i %s (%i%% chance) and WON a golden shower! Be moist and rejoice! Splashback! [%s]" % (req.nick, amount, Config.config["coinab"], chances, token))
+			won_string = "%s %i %s" % (coloured_text(text = "WON a golden shower", colour = "03", channel = req.target), amount, coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
+			req.say("%s played %i %s (%i%% chance) and %s! Be moist and rejoice! %s [%s]" % (req.nick, amount, Config.config["coinab"], chances, coloured_text(text = "WON a golden shower", colour = "03", channel = req.target), coloured_text(text = "Splashback!", colour = "03", channel = req.target), token))
 			try:
 				Transactions.tip(token, toacct, acct, parse_amount("goldenshower",toacct), tip_source = "@LOTTO") # accts swapped
 			except Transactions.NotEnoughMoney:
 				return req.notice_private("%s Bot ran out of winnings!" % (reply))
 			soak(req, ["splashback", "1440"], from_instance = True)
 		else:
-			req.say("%s played %i %s but left everyone dry :( [%s]" % (req.nick, amount, Config.config["coinab"], token))
+			req.say("%s played %i %s but %s [%s]" % (req.nick, amount, Config.config["coinab"], coloured_text(text = "left everyone dry :(", colour = "04", channel = req.target), token))
 		return
 	except Transactions.NotEnoughMoney:
 		req.notice_private("You tried to play %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
@@ -674,6 +743,8 @@ games["roul"] = roulette
 games["roulette"] = roulette
 games["ballfondle"] = roulette
 games["fondleballs"] = roulette
+
+games["roger-that"] = roger_that
 
 
 

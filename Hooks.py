@@ -124,17 +124,22 @@ def message(instance, source, target, text):
 			commandline = text
 		if len(text) > 1 and text[0] == Config.config["prefix"]:
 			commandline = text[1:]
-		elif (target != instance) and len(Global.response_read_timers) > 0 and nick in Global.response_read_timers:
-		# elif (target != instance or Irc.is_admin(source)) and len(Global.response_read_timers) > 0 and nick in Global.response_read_timers:
-			t = time.time()
-			if Global.response_read_timers[nick]["time"] + 40 > t:
-				commandline = "%s %s" % (Global.response_read_timers[nick]["cmd"], text)
-			elif Global.response_read_timers[nick]["time"] + (5*60) > t:
-				commandline = "%s auto" % (Global.response_read_timers[nick]["cmd"])
-				Logger.irclog(instance + ": timer expired (auto) for: %s" % (nick))
+		elif (target != instance or Irc.is_super_admin(source)) and len(Global.response_read_timers) > 0 and nick in Global.response_read_timers or ("@roger_that" in Global.response_read_timers and (target in Config.config["welcome_channels"] or Irc.is_super_admin(source))):
+			if nick not in Global.response_read_timers and "@roger_that" in Global.response_read_timers:
+				theReadTimer = "@roger_that"
+				auto_or_text = text
 			else:
-				commandline = "%s end-game" % (Global.response_read_timers[nick]["cmd"])
-				Logger.irclog(instance + ": timer expired for: %s, cmd: %s" % (nick, Global.response_read_timers[nick]["cmd"]))
+				theReadTimer = nick
+				auto_or_text = "auto"
+			t = time.time()
+			if Global.response_read_timers[theReadTimer]["time"] + 40 > t:
+				commandline = "%s %s" % (Global.response_read_timers[theReadTimer]["cmd"], text)
+			elif Global.response_read_timers[theReadTimer]["time"] + (10*60) > t:
+				commandline = "%s %s" % (Global.response_read_timers[theReadTimer]["cmd"], auto_or_text)
+				Logger.log("c", "%s: timer expired (auto) for: %s on: %s, cmd: %s" % (instance, nick, theReadTimer, Global.response_read_timers[theReadTimer]["cmd"]))
+			else:
+				commandline = "%s end-game" % (Global.response_read_timers[theReadTimer]["cmd"])
+				Logger.log("c", "%s: timer expired (ended) for: %s on: %s, cmd: %s" % (instance, nick, theReadTimer, Global.response_read_timers[theReadTimer]["cmd"]))
 		# Track & update last time user talked in channel (ignore PM to bot for activity purposes)
 		if target.startswith('#'):
 			with Global.active_lock:
