@@ -1,7 +1,7 @@
 # coding=utf8
 import sys, os, subprocess, time, datetime, math, pprint, traceback, operator, random
 import Irc, Transactions, Blocknotify, Logger, Global, Hooks, Config
-from Commands import parse_amount, validate_user
+from Commands import parse_amount, validate_user, coloured_text
 from collections import OrderedDict
 
 games = {}
@@ -55,6 +55,21 @@ def add_read_timer(nick, time, cmd = "bj", vals = {}):
 	Global.response_read_timers[nick]["cmd"] = cmd
 
 
+def check_gamble_raise(nick = False):
+	t = time.time()
+	if nick and "@gamblelimitraise" in Global.gamble_list and nick in Global.gamble_list["@gamblelimitraise"] and "limit" in Global.gamble_list["@gamblelimitraise"][nick]:
+		if "time" in Global.gamble_list["@gamblelimitraise"][nick] and Global.gamble_list["@gamblelimitraise"][nick]["time"] > t - (60*60):
+			try:
+				maxbet = Global.gamble_list["@gamblelimitraise"][nick]["limit"]
+				Global.gamble_list["@gamblelimitraise"].pop(nick)
+				return maxbet
+			except ValueError as e:
+				Global.gamble_list["@gamblelimitraise"].pop(nick)
+				return False
+		else:
+			Global.gamble_list["@gamblelimitraise"].pop(nick)
+			return False
+	return False
 
 
 
@@ -126,17 +141,24 @@ def lotto(req, arg):
 
 
 def bj_deal():
-	deck = ['2♠', '3♠', '4♠', '5♠', '6♠', '7♠', '8♠', '9♠', '10♠', 'J♠', 'Q♠', 'K♠', 'A♠',
-			'2♦', '3♦', '4♦', '5♦', '6♦', '7♦', '8♦', '9♦', '10♦', 'J♦', 'Q♦', 'K♦', 'A♦',
-			'2♥', '3♥', '4♥', '5♥', '6♥', '7♥', '8♥', '9♥', '10♥', 'J♥', 'Q♥', 'K♥', 'A♥',
-			'2♣', '3♣', '4♣', '5♣', '6♣', '7♣', '8♣', '9♣', '10♣', 'J♣', 'Q♣', 'K♣', 'A♣']
-	random.shuffle(deck)
+	ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+	suits = ['♠','♦','♥','♣']
+	deck = [rank+suit for suit in suits for rank in ranks]
+	multi_deck = []
+	for deckno in range(4):
+		onedeck = deck
+		for shuffle in range(random.randint(5, 20)):
+			random.shuffle(onedeck)
+		multi_deck += onedeck
+	for shuffle in range(random.randint(5, 20)):
+		random.shuffle(multi_deck)
+	deck = multi_deck[-len(multi_deck)/2:]
 	phand = []
 	dhand = []
-	phand.append(deck.pop())
-	dhand.append(deck.pop())
-	phand.append(deck.pop())
-	dhand.append(deck.pop())
+	phand.append(deck.pop(0))
+	dhand.append(deck.pop(0))
+	phand.append(deck.pop(0))
+	dhand.append(deck.pop(0))
 	return dhand,phand,deck
 
 def bj_total(hand, show_softhand = False):
@@ -160,11 +182,11 @@ def bj_total(hand, show_softhand = False):
 	return total
 
 def bj_hit(hand, deck):
-	card = deck.pop()
+	card = deck.pop(0)
 	hand.append(card)
 	return hand,deck
 
-def bj_result_string(dealer_hand, player_hand, player_total = False, hand_softhand = False, dealer_total = False):
+def bj_result_string(dealer_hand, player_hand, player_total = False, hand_softhand = False, dealer_total = False, channel = False):
 	ptotal = ""
 	dtotal = ""
 	if hand_softhand:
@@ -181,8 +203,24 @@ def bj_result_string(dealer_hand, player_hand, player_total = False, hand_softha
 		for i in range(len(dealer_hand)):
 			if i == 0: dealer_hand_mask.append(dealer_hand[i])
 			else: dealer_hand_mask.append('??')
-	dealer_hand_mask = '[ '+' '.join(card for card in dealer_hand_mask)+' ]'
-	hand_mask = '[ '+' '.join(card for card in player_hand)+' ]'
+	dhand_str = '['
+	for card in dealer_hand_mask:
+		if card[-3:] == '♥' or card[-3:] == '♦':
+			dhand_str = "%s %s%s" % (dhand_str, card[:-3], coloured_text(text = card[-3:], colour = "04", channel = channel))
+		else:
+			dhand_str = "%s %s" % (dhand_str, card)
+	dhand_str = "%s ]" % (dhand_str)
+	dealer_hand_mask = dhand_str
+	# dealer_hand_mask = '[ '+' '.join(card for card in dealer_hand_mask)+' ]'
+	phand_str = '['
+	for card in player_hand:
+		if card[-3:] == '♥' or card[-3:] == '♦':
+			phand_str = "%s %s%s" % (phand_str, card[:-3], coloured_text(text = card[-3:], colour = "04", channel = channel))
+		else:
+			phand_str = "%s %s" % (phand_str, card)
+	phand_str = "%s ]" % (phand_str)
+	hand_mask = phand_str
+	# hand_mask = '[ '+' '.join(card for card in player_hand)+' ]'
 	return hand_mask+ptotal+"  <->  House: "+dealer_hand_mask+dtotal
 
 def bj_score(req, dealer_hand, player_hand, deal = False, stand = False, split = False, hand1 = False, force_dealerReveal = False):
@@ -195,39 +233,40 @@ def bj_score(req, dealer_hand, player_hand, deal = False, stand = False, split =
 	player_total, hand_softhand = bj_total(player_hand, show_softhand = True)
 	dealer_total = bj_total(dealer_hand)
 	dealerReveal = True
+	if len(player_hand) == 2: deal = True
 	if not player_total >= 21 and not dealer_total >= 21 and not stand:
-		msg = "[H]it or [S]tand"
-		if deal == True:
+		msg = "\x02[H]\x02it or \x02[S]\x02tand"
+		if deal == True and not split:
 			if bj_total([player_hand[0]]) == bj_total([player_hand[1]]):
-				msg = "[H]it , [S]tand , [D]ouble-down or S[P]lit"
+				msg = "\x02[H]\x02it , \x02[S]\x02tand , \x02[D]ouble-down or S\x02[P]\x02lit"
 			else:
-				msg = "[H]it , [S]tand or [D]ouble-down"
+				msg = "\x02[H]\x02it , \x02[S]\x02tand or \x02[D]\x02ouble-down"
 		hand_playon = True
 		dealerReveal = False
 		as_notice = True
-	elif player_total == 21 and deal == True:
-		msg = "You got a BJ!!"
+	elif player_total == 21 and deal == True and len(player_hand) == 2:
+		msg = "Dealer gave you a %s!!" % (coloured_text(text = "BJ", colour = "03", channel = req.target))
 		hand_payout_bj = True
 		hand_win = True
-	elif dealer_total == 21 and deal == True:
-		msg =  ":< Dealer got a BJ."
+	elif dealer_total == 21 and deal == True and len(dealer_hand) == 2:
+		msg =  "%s You gave the dealer a %s." % (coloured_text(text = ":<", colour = "04", channel = req.target), coloured_text(text = "BJ", colour = "04", channel = req.target))
 	elif player_total > 21:
-		msg = ":< Bust."
+		msg = "%s You %s your load." % (coloured_text(text = ":<", colour = "04", channel = req.target), coloured_text(text = "busted", colour = "04", channel = req.target))
 	elif dealer_total > 21:	   
-		msg = "Dealer busts!"
+		msg = "%s his load!" % (coloured_text(text = "Dealer busts", colour = "03", channel = req.target))
 		hand_win = True
 	elif player_total < dealer_total:
-		msg =":< Beaten by Dealer"
+		msg ="%s Dealer %s closer" % (coloured_text(text = ":<", colour = "04", channel = req.target), coloured_text(text = "came", colour = "04", channel = req.target))
 	elif player_total > dealer_total:   
-		msg = "Beat the Dealer!"
+		msg = "You %s closer!" % (coloured_text(text = "came", colour = "03", channel = req.target))
 		hand_win = True
 	elif player_total == dealer_total:   
-		msg = ":S Draw"
+		msg = "%s Draw" % (coloured_text(text = ":S", colour = "02", channel = req.target))
 		hand_draw = True
 	if (dealerReveal and (not split or not hand1)) or (force_dealerReveal):
-		results = bj_result_string(dealer_hand = dealer_hand, player_hand = player_hand, player_total = player_total, dealer_total = dealer_total)
+		results = bj_result_string(dealer_hand = dealer_hand, player_hand = player_hand, player_total = player_total, dealer_total = dealer_total, channel = req.target)
 	else:
-		results = bj_result_string(dealer_hand = dealer_hand, player_hand = player_hand, player_total = player_total, hand_softhand = hand_softhand)
+		results = bj_result_string(dealer_hand = dealer_hand, player_hand = player_hand, player_total = player_total, hand_softhand = hand_softhand, channel = req.target)
 	if msg and split:
 		if hand1:
 			if not hand_playon and not force_dealerReveal:
@@ -273,12 +312,13 @@ def hand_winner_tip(req, bet, pot_acct, winner_acct, token, hand_reply, hand_pay
 	winnings = parse_amount(str(bet*multiplier),pot_acct, roundDown = True)
 	try:
 		Transactions.tip(token, pot_acct, winner_acct, (winnings+bet), tip_source = "@BLACKJACK")
-		return req.reply("%s    WON %i %s %s!" % (hand_reply, winnings, Config.config["coinab"], odds))
+		won_string = "%s %i %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), winnings, coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
+		return req.reply("%s %s %s!" % (hand_reply, won_string, odds))
 	except Transactions.NotEnoughMoney:
 		return req.reply("Bot ran out of winnings!")
 
 def bj_cancel(token, bot_acct, player_acct, bet, bet2):
-	msg = "Game cancelled, bet(s) partially refunded."
+	msg = "Previous game cancelled, bet(s) partially refunded."
 	if bet > 0:
 		try:
 			Transactions.tip(token, source = bot_acct, target = player_acct, amount = (bet/2), tip_source = "@BLACKJACK") #toacct swapped
@@ -301,8 +341,12 @@ def bj(req, arg):
 		conf_switch = False
 	acct = Irc.account_names([req.nick])[0]
 	host = Irc.get_host(req.source)
-	minbet = 10
+	minbet = 5
 	maxbet = 1000
+	# if Irc.is_admin(req.source):
+	# 	maxbet = 10000
+	tempmaxbet = check_gamble_raise(req.nick)
+	if tempmaxbet: maxbet = tempmaxbet
 	# if not Irc.is_admin(req.source):
 	# 	return # temporary disable
 	if host in Global.gamble_list and Global.gamble_list[host] != acct and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
@@ -320,9 +364,12 @@ def bj(req, arg):
 	toacct = req.instance
 	choice = arg[0].lower()
 	token = Logger.token()
-	Logger.log("c","BJ triggered: %s" % (arg))
+	Logger.log("c","BJ triggered: %s Choice: %s" % (arg, choice))
 	if len(arg) > 0 and not (arg[0].isdigit() and parse_amount(arg[0]) >= 5) and req.nick in Global.response_read_timers:
-		Logger.log("c","BJ stored vals: %s" % (Global.response_read_timers[req.nick]["vals"]))
+		if choice == "end-game":
+			Global.response_read_timers.pop(req.nick)
+			Logger.log("c","BJ ended, timer removed")
+			return req.notice_private("Don't fall asleep during a BJ! Bet not refunded!")
 		bj_start = Global.response_read_timers[req.nick]["vals"]["bj_start"]
 		bj_public = Global.response_read_timers[req.nick]["vals"]["bj_public"]
 		deck = Global.response_read_timers[req.nick]["vals"]["deck"]
@@ -334,6 +381,7 @@ def bj(req, arg):
 		game_num = Global.response_read_timers[req.nick]["vals"]["game_num"]
 		hand_win = Global.response_read_timers[req.nick]["vals"]["hand_win"]
 		hand_draw = Global.response_read_timers[req.nick]["vals"]["hand_draw"]
+		Logger.log("c","BJ stored vals: BJ_Start: %s, BJ_Public: %s, Game_Num: %i, Bet1: %i, Bet2: %i, Hand1_Win: %s, Hand1_Draw: %s, Deck Count: %i, Dealer Hand Count: %i, Player Hand1 Count: %i, Player Hand2 Count: %i" % (bj_start, bj_public, game_num, bet, bet2, hand_win, hand_draw, len(deck), len(dealer_hand), len(player_hand), len(player_hand2)))
 		hand2_reply = hand_reply = ""
 		choiceFound = hand_playon = hand2_playon = hand_payout_bj = hand2_payout_bj = hand2_win = hand2_draw = as_notice = False
 		if bet2 > 0:
@@ -368,9 +416,11 @@ def bj(req, arg):
 				bet = bet + bet
 				hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, player_hand, dealer_hand, deck, as_notice = bj_player_hit(player_hand = player_hand, dealer_hand = dealer_hand, deck = deck, req = req, split = bj_split, hand1 = True)
 				hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, player_hand, dealer_hand, deck = bj_player_stand(player_hand = player_hand, dealer_hand = dealer_hand, deck = deck, req = req, split = bj_split, hand1 = True)
+				if not hand_playon:
+					as_notice = False
 			except Transactions.NotEnoughMoney:
 				return req.notice_private("You tried to double down %i %s but you only have %i %s" % (bet, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
-		elif bj_start and (choice == "split" or choice == "p" or choice == "4") and (bj_total([player_hand[0]]) == bj_total([player_hand[1]])):
+		elif bj_start and (choice == "split" or choice == "p" or choice == "4") and (bj_total([player_hand[0]]) == bj_total([player_hand[1]])) or (Irc.is_super_admin(req.source) and len(arg) == 2 and arg[1] == "givemeasplit"):
 			choiceFound = True
 			try:
 				Transactions.tip(token, acct, toacct, bet, tip_source = "@BLACKJACK")
@@ -384,49 +434,66 @@ def bj(req, arg):
 				return req.notice_private("You tried to split on %i %s but you only have %i %s" % (bet, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
 		else:
 			choice = "none"
-		if choiceFound: Global.response_read_timers.pop(req.nick)
-		if bj_split and game_num == 1 and not hand_playon:
-			game_num = 2
-			hand2_playon = True
-			hand2_win, hand2_reply, hand_playon, hand2_draw, hand2_payout_bj, as_notice = bj_score(req, dealer_hand, player_hand2, split = bj_split)
-		if game_num == 2 and not hand_playon and not hand2_playon:
-			hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, player_hand, dealer_hand, deck = bj_player_stand(player_hand = player_hand, dealer_hand = dealer_hand, deck = deck, req = req, split = bj_split, hand1 = True, game_num = game_num, force_dealerReveal = True)
-		if bet > 0 and hand_win and not hand_playon and not hand2_playon:
-			hand_winner_tip(req, bet = bet, pot_acct = toacct, winner_acct = acct, token = token, hand_reply = hand_reply, hand_payout_bj = hand_payout_bj)
-			bet = 0
-			hand_reply = ""
-			if bet2 == 0: return
-		if bet2 > 0 and hand2_win and not hand_playon and not hand2_playon and game_num == 2:
-			hand_winner_tip(req, bet = bet2, pot_acct = toacct, winner_acct = acct, token = token, hand_reply = hand2_reply, hand_payout_bj = hand2_payout_bj)
-			bet2 = 0
-			if bet == 0 and bet2 == 0: return
-		if choiceFound and (not hand_win or not hand2_win) and (bet > 0 or bet2 > 0):
-			if hand_playon or hand2_playon:
-				add_read_timer(nick = req.nick, time = curtime, cmd = "bj", vals = {"bj_start":False, "bj_public":bj_public, "deck":deck, "hand_win":hand_win, "hand_draw":hand_draw, "dealer_hand":dealer_hand, "player_hand":player_hand, "bet":bet, "player_hand2":player_hand2, "bet2":bet2, "game_num":game_num })
-			elif hand_draw and bet > 0:
-				try:
-					Transactions.tip(token, toacct, acct, bet, tip_source = "@BLACKJACK") #toacct swapped
-					hand_reply = "%s bet returned." % (hand_reply)
-				except Transactions.NotEnoughMoney:
-					return req.notice_private("Bot ran out of money to return bet!")
-			if not hand_playon and not hand2_playon and not hand_draw and choice == "none":
-				cancelmsg = bj_cancel(token = token, bot_acct = toacct, player_acct = acct, bet = bet, bet2 = bet2)
-				return req.notice_private("%s  %s" % hand_reply, cancelmsg)
-			if len(hand_reply) > 2 and as_notice and req.target not in Config.config["botchannels"] and not bj_public:
-				req.notice_private(hand_reply)
-			elif len(hand_reply) > 2:
-				req.reply(hand_reply)
-			if bet2 > 0:
-				if hand2_draw:
+		if choiceFound:
+			Global.response_read_timers.pop(req.nick)
+			Logger.log("c","BJ choice found, read response cleared")
+			if bj_split and game_num == 1 and not hand_playon:
+				Logger.log("c","BJ switching to HAND2")
+				game_num = 2
+				hand2_playon = True
+				hand2_win, hand2_reply, hand2_playon, hand2_draw, hand2_payout_bj, as_notice = bj_score(req, dealer_hand, player_hand2, split = bj_split)
+			if game_num == 2 and not hand_playon and not hand2_playon:
+				hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, player_hand, dealer_hand, deck = bj_player_stand(player_hand = player_hand, dealer_hand = dealer_hand, deck = deck, req = req, split = bj_split, hand1 = True, game_num = game_num, force_dealerReveal = True)
+			if bet > 0 and hand_win and not hand_playon and not hand2_playon:
+				Logger.log("c","BJ HAND1 Won, bet: %i, bet2: %i" % (bet, bet2))
+				hand_winner_tip(req, bet = bet, pot_acct = toacct, winner_acct = acct, token = token, hand_reply = hand_reply, hand_payout_bj = hand_payout_bj)
+				bet = 0
+				hand_reply = ""
+				if bet2 == 0: return
+			if bet2 > 0 and hand2_win and not hand_playon and not hand2_playon and game_num == 2:
+				Logger.log("c","BJ HAND2 Won, bet: %i, bet2: %i" % (bet, bet2))
+				hand_winner_tip(req, bet = bet2, pot_acct = toacct, winner_acct = acct, token = token, hand_reply = hand2_reply, hand_payout_bj = hand2_payout_bj)
+				bet2 = 0
+				if bet == 0 and bet2 == 0: return
+			if (not hand_win or not hand2_win) and (bet > 0 or bet2 > 0):
+				Logger.log("c","BJ playon, hand_playon: %s, hand_playon: %s" % (hand_playon, hand2_playon))
+				if hand_playon or hand2_playon:
+					add_read_timer(nick = req.nick, time = curtime, cmd = "bj", vals = {
+						"bj_start":False,
+						"game_num":game_num,
+						"bj_public":bj_public,
+						"deck":deck,
+						"dealer_hand":dealer_hand,
+						"hand_win":hand_win,
+						"hand_draw":hand_draw,
+						"player_hand":player_hand,
+						"bet":bet,
+						"player_hand2":player_hand2,
+						"bet2":bet2 })
+				elif hand_draw and bet > 0:
 					try:
-						Transactions.tip(token, toacct, acct, bet2, tip_source = "@BLACKJACK") #toacct swapped
-						hand2_reply = "%s bet returned." % (hand2_reply)
+						Transactions.tip(token, toacct, acct, bet, tip_source = "@BLACKJACK") #toacct swapped
+						hand_reply = "%s bet returned." % (hand_reply)
 					except Transactions.NotEnoughMoney:
 						return req.notice_private("Bot ran out of money to return bet!")
-				if len(hand2_reply) > 2 and as_notice and req.target not in Config.config["botchannels"] and not bj_public:
-					req.notice_private(hand2_reply)
-				elif len(hand2_reply) > 2:
-					req.reply(hand2_reply)
+				if not hand_playon and not hand2_playon and not hand_draw and choice == "none":
+					cancelmsg = bj_cancel(token = token, bot_acct = toacct, player_acct = acct, bet = bet, bet2 = bet2)
+					return req.notice_private("%s  %s" % hand_reply, cancelmsg)
+				if len(hand_reply) > 2 and as_notice and req.target not in Config.config["botchannels"] and not bj_public:
+					req.notice_private(hand_reply)
+				elif len(hand_reply) > 2:
+					req.reply(hand_reply)
+				if bet2 > 0:
+					if hand2_draw:
+						try:
+							Transactions.tip(token, toacct, acct, bet2, tip_source = "@BLACKJACK") #toacct swapped
+							hand2_reply = "%s bet returned." % (hand2_reply)
+						except Transactions.NotEnoughMoney:
+							return req.notice_private("Bot ran out of money to return bet!")
+					if len(hand2_reply) > 2 and as_notice and req.target not in Config.config["botchannels"] and not bj_public:
+						req.notice_private(hand2_reply)
+					elif len(hand2_reply) > 2:
+						req.reply(hand2_reply)
 	elif req.nick not in Global.response_read_timers or (req.nick in Global.response_read_timers and Global.response_read_timers[req.nick]["time"] + (5*60) < curtime) or (arg[0].isdigit() and parse_amount(arg[0]) >= minbet):
 		try:
 			amount = parse_amount(arg[0], acct)
@@ -439,7 +506,7 @@ def bj(req, arg):
 		if amount < minbet:
 			return req.reply("Don't be so cheap! %s %s minimum!" % (minbet, Config.config["coinab"]), True)
 		elif amount > maxbet:
-			return req.reply("Can't let you BJ that many %s at once." % (Config.config["coinab"]), True)
+			return req.reply("Sorry, you can only BJ %i %s at a time." % (maxbet, Config.config["coinab"]), True)
 		if conf_switch == "public":
 			bj_public = True
 		else:
@@ -456,7 +523,18 @@ def bj(req, arg):
 			else:
 				hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, as_notice = bj_score(req, dealer_hand, player_hand, deal = True)
 			if hand_playon:
-				add_read_timer(nick = req.nick, time = curtime, cmd = "bj", vals = {"bj_start":True, "bj_public":bj_public, "deck":deck, "hand_win":False, "hand_draw":False, "dealer_hand":dealer_hand, "player_hand":player_hand, "bet":amount, "player_hand2":[], "bet2":0, "game_num":1 })
+				add_read_timer(nick = req.nick, time = curtime, cmd = "bj", vals = {
+					"bj_start":True,
+					"game_num":1,
+					"bj_public":bj_public,
+					"deck":deck,
+					"dealer_hand":dealer_hand,
+					"hand_win":False,
+					"hand_draw":False,
+					"player_hand":player_hand,
+					"bet":amount,
+					"player_hand2":[],
+					"bet2":0 })
 			elif hand_win:
 				return hand_winner_tip(req, bet = amount, pot_acct = toacct, winner_acct = acct, token = token, hand_reply = hand_reply, hand_payout_bj = hand_payout_bj)
 			if as_notice and req.target not in Config.config["botchannels"] and not bj_public:
@@ -472,6 +550,7 @@ def bj(req, arg):
 
 def roulette_roll(bet_choice, landon):
 	roul_win = False
+	odds_str = ""
 	roul_multiplier = 0
 	red_nums = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
 	black_nums = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
@@ -479,21 +558,26 @@ def roulette_roll(bet_choice, landon):
 	if landon > 0 and ((bet_choice == 'even' and landon % 2 == 0) or (bet_choice == 'odd' and landon % 2 == 1) or (bet_choice == 'low' and landon < 19) or (bet_choice == 'high' and landon >= 19)):
 		roul_win = True
 		roul_multiplier = 2
+		odds_str = "(1to1)"
 	elif landon > 0 and (((bet_choice == '1st' or bet_choice == 'first') and landon < 13) or ((bet_choice == '2nd' or bet_choice == 'second') and landon >= 13 and landon <= 25) or ((bet_choice == '3rd' or bet_choice == 'third') and landon > 25)):
 		roul_win = True
 		roul_multiplier = 3
+		odds_str = "(2to1)"
 	elif landon > 0 and ((bet_choice == 'red' and landon in red_nums) or (bet_choice == 'black' and landon in black_nums)):
 		roul_win = True
 		roul_multiplier = 2
+		odds_str = "(1to1)"
 	elif (bet_choice == 'topline' and landon in topline_nums) or (bet_choice == 'basket' and landon in topline_nums):
 		roul_win = True
 		roul_multiplier = 9
+		odds_str = "(8to1)"
 	elif bet_choice.isdigit():
 		bet_choice_num = parse_amount(bet_choice, min_amount = 0)
 		if bet_choice_num >= 0 and bet_choice_num <= 36 and bet_choice_num == landon:
 			roul_win = True
 			roul_multiplier = 36
-	return roul_win, roul_multiplier
+			odds_str = "(35to1)"
+	return roul_win, roul_multiplier, odds_str
 
 
 def roulette(req, arg):
@@ -503,8 +587,12 @@ def roulette(req, arg):
 	bet_count = len(arg)/2
 	acct = Irc.account_names([req.nick])[0]
 	host = Irc.get_host(req.source)
-	minbet = 10
+	minbet = 5
 	maxbet = 1000
+	# if Irc.is_admin(req.source):
+	# 	maxbet = 10000
+	tempmaxbet = check_gamble_raise(req.nick)
+	if tempmaxbet: maxbet = tempmaxbet
 	won_bet_count = 0
 	lost_bets = 0
 	total_bet_amt = 0
@@ -531,13 +619,14 @@ def roulette(req, arg):
 			return req.reply("Invalid bet, available bets: %s" % (roul_valid_bets))
 		try:
 			bet = parse_amount(arg[(0+argoffset)], acct)
+			arg[(0+argoffset)] = str(bet)
 		except ValueError as e:
 			return req.notice_private(str(e))
 		total_bet_amt = total_bet_amt + bet
 	if total_bet_amt < minbet:
 		return req.reply("Don't be so cheap! %s %s minimum!" % (minbet, Config.config["coinab"]), True)
 	elif total_bet_amt > maxbet:
-		return req.reply("Can't let you spin that many %s at once." % (Config.config["coinab"]), True)
+		return req.reply("Sorry, only %i %s at a time." % (maxbet, Config.config["coinab"]), True)
 	add_gamble_timer(targetchannel = req.target, acct = acct, curtime = curtime)
 	Global.gamble_list[host] = acct
 	landon = random.randint(0, 36)
@@ -548,14 +637,15 @@ def roulette(req, arg):
 			argoffset = i+i
 			bet = parse_amount(arg[(0+argoffset)], acct)
 			bet_choice = arg[(1+argoffset)].lower()
-			roul_win, roul_multiplier = roulette_roll(bet_choice, landon)
+			roul_win, roul_multiplier, odds_str = roulette_roll(bet_choice, landon)
 			if roul_win:
 				won_bet_count = won_bet_count + 1
 				roul_winnings = parse_amount(str(bet*roul_multiplier),toacct, roundDown = True)
 				if bet_count > 1 and won_bet_count > 1:
-					reply = "%s + %i on %s" % (reply, (roul_winnings-bet), bet_choice.upper())
+					reply = "%s + %i on %s %s" % (reply, (roul_winnings-bet), bet_choice.upper(), odds_str)
 				else:
-					reply = "%s ... You WON %i %s on %s" % (reply, (roul_winnings-bet), Config.config["coinab"], bet_choice.upper())
+					won_string = "%s %i %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), (roul_winnings-bet), coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
+					reply = "%s ... You %s on %s %s" % (reply, won_string, bet_choice.upper(), odds_str)
 				try:
 					Transactions.tip(token, toacct, acct, roul_winnings, tip_source = "@ROULETTE") # accts swapped
 				except Transactions.NotEnoughMoney:
@@ -564,11 +654,11 @@ def roulette(req, arg):
 				if bet_count > 3:
 					lost_bets = lost_bets + bet
 				else:
-					reply = "%s ... You lost %i %s on %s :<" % (reply, bet, Config.config["coinab"], bet_choice.upper())
+					reply = "%s ... You lost %i %s on %s %s" % (reply, bet, Config.config["coinab"], bet_choice.upper(), coloured_text(text = ":<", colour = "04", channel = req.target))
 	except Transactions.NotEnoughMoney:
 		return req.notice_private("%s You tried to play %i %s but you only have %i %s" % (reply, total_bet_amt, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
 	if lost_bets > 0:
-		reply = "%s ... You lost %i %s on poor choices :<" % (reply, lost_bets, Config.config["coinab"])
+		reply = "%s ... You lost %i %s on poor choices %s" % (reply, lost_bets, Config.config["coinab"], coloured_text(text = ":<", colour = "04", channel = req.target))
 	return req.reply(reply)
 
 

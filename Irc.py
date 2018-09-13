@@ -59,6 +59,9 @@ def ignore(host, duration):
 def is_admin(hostmask):
 	return Config.config["admins"].get(get_host(hostmask), False)
 
+def is_super_admin(hostmask):
+	return Config.config["superadmins"].get(get_host(hostmask), False)
+
 def account_names(nicks):
 	for i in range(len(nicks)):
 		nicks[i] = sanitize_nickname(nicks[i])

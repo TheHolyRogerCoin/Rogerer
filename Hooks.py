@@ -133,9 +133,8 @@ def message(instance, source, target, text):
 				commandline = "%s auto" % (Global.response_read_timers[nick]["cmd"])
 				Logger.irclog(instance + ": timer expired (auto) for: %s" % (nick))
 			else:
-				Global.response_read_timers.pop(nick)
-				# commandline = "%s auto auto" % (Global.response_read_timers[nick]["cmd"])
-				Logger.irclog(instance + ": timer expired for: %s" % (nick))
+				commandline = "%s end-game" % (Global.response_read_timers[nick]["cmd"])
+				Logger.irclog(instance + ": timer expired for: %s, cmd: %s" % (nick, Global.response_read_timers[nick]["cmd"]))
 		# Track & update last time user talked in channel (ignore PM to bot for activity purposes)
 		if target.startswith('#'):
 			with Global.active_lock:
@@ -143,7 +142,7 @@ def message(instance, source, target, text):
 					Global.active_list[target] = {}
 				Global.active_list[target][nick] = time.time()
 		if commandline:
-			if Irc.is_ignored(host):
+			if Irc.is_ignored(host) and not Irc.is_super_admin(source):
 				Logger.log("c", instance + ": %s <%s ignored> %s " % (target, nick, text))
 				return
 			Logger.log("c", instance + ": %s <%s> %s " % (target, nick, text))

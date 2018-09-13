@@ -20,6 +20,28 @@ def random_line(file):
 			line = aline
 	return line.strip()
 
+def coloured_text(text = "", colour = False, rainbow = False, channel = False):
+	if channel and channel in Config.config["stripcolours"]:
+		return text
+	first = True
+	if rainbow:
+		text = str(text)
+		sep = ""
+	else:
+		text = text.split()
+		sep = " "
+	coloured_string = ""
+	for t in text:
+		if first:
+			onesep = ""
+		else:
+			onesep = sep
+		if not colour or rainbow:
+			colour = "%02d" % (random.randint(0,15),)
+		coloured_string = "%s%s\x03%s%s\x03" % (coloured_string, onesep, colour, t)
+		first = False
+	return coloured_string
+
 commands = {}
 
 def ping(req, _):
@@ -299,7 +321,7 @@ def faucet(req, arg):
 			return req.notice_private(user_valid)
 	if is_soak_ignored(toacct):
 		return
-	if req.target == req.nick and not Irc.is_admin(req.source):
+	if req.target == req.nick and not Irc.is_super_admin(req.source):
 		return req.reply("Can't faucet in private!")
 	timer = random.randint((60*60),(4*60*60))
 	if toacct in Global.faucet_list and Global.faucet_list[toacct] + timer > curtime:
@@ -574,14 +596,14 @@ commands["help"] = _help
 def admin(req, arg):
 	"""
 	admin"""
-	if len(arg) and Irc.is_admin(req.source):
+	if len(arg) and Irc.is_admin(req.source) or Irc.is_super_admin(req.source):
 		command = arg[0]
 		arg = arg[1:]
-		if command == "reload":
+		if command == "reload" and Irc.is_super_admin(req.source):
 			for mod in arg:
 				reload(sys.modules[mod])
 			req.reply("Reloaded")
-		elif command == "exec" and Config.config.get("enable_exec", None):
+		elif command == "exec" and Config.config.get("enable_exec", None) and Irc.is_super_admin(req.source):
 			try:
 				exec(" ".join(arg).replace("$", "\n"))
 			except Exception as e:
@@ -595,25 +617,25 @@ def admin(req, arg):
 		elif command == "ignore":
 			Irc.ignore(arg[0], int(arg[1]))
 			req.reply("Ignored")
-		elif command == "die":
+		elif command == "die" and Irc.is_super_admin(req.source):
 			for instance in Global.instances:
 				Global.manager_queue.put(("Disconnect", instance))
 			Global.manager_queue.join()
 			Blocknotify.stop()
 			Global.manager_queue.put(("Die",))
-		elif command == "restart":
+		elif command == "restart" and Irc.is_super_admin(req.source):
 			for instance in Global.instances:
 				Global.manager_queue.put(("Disconnect", instance))
 			Global.manager_queue.join()
 			Blocknotify.stop()
 			os.execv(sys.executable, [sys.executable] + sys.argv)
-		elif command == "manager":
+		elif command == "manager" and Irc.is_super_admin(req.source):
 			for cmd in arg:
 				Global.manager_queue.put(cmd.split("$"))
 			req.reply("Sent")
-		elif command == "raw":
+		elif command == "raw" and Irc.is_super_admin(req.source):
 			Irc.instance_send(req.instance, eval(" ".join(arg)))
-		elif command == "config":
+		elif command == "config" and Irc.is_super_admin(req.source):
 			if arg[0] == "save":
 				os.rename("Config.py", "Config.py.bak")
 				with open("Config.py", "w") as f:
@@ -689,12 +711,12 @@ def admin(req, arg):
 			if len(arg) > 1:
 				if arg[1] == "on":
 					Transactions.lock(arg[0], True)
-				elif arg[1] == "off":
+				elif arg[1] == "off" and Irc.is_super_admin(req.source):
 					Transactions.lock(arg[0], False)
 				req.reply("Done")
 			elif len(arg):
 				req.reply("locked" if Transactions.lock(arg[0]) else "not locked")
-		elif command == "update":
+		elif command == "update" and Irc.is_super_admin(req.source):
 			output = subprocess.check_output(["git", "pull"])
 			req.reply("%s" % (output) if output else "Failed")
 		elif command == "host":
@@ -710,10 +732,10 @@ def admin(req, arg):
 			elif len(arg) and arg[0] in Global.faucet_list:
 				req.reply("Faucet [%s] timer at [%s]" % (arg[0], datetime.datetime.fromtimestamp(int(Global.faucet_list[arg[0]])).strftime('%Y-%m-%d %H:%M')) if arg[0] in Global.faucet_list else "User [%s] does not exist" % (arg[0]))
 		elif command == "gamblereset":
-			if len(arg) == 2 and arg[0] in Global.gamble_list:
+			if len(arg) == 2 and arg[0] in Global.gamble_list and (arg[1] == "now" or arg[1] == "del"):
 				Global.gamble_list.pop(arg[0])
 				req.reply("Done")
-			elif len(arg) == 3 and arg[0] in Global.gamble_list and arg[1] in Global.gamble_list[(arg[0])]:
+			elif len(arg) == 3 and arg[0] in Global.gamble_list and arg[1] in Global.gamble_list[(arg[0])] and (arg[2] == "now" or arg[2] == "del"):
 				Global.gamble_list[(arg[0])].pop(arg[1])
 				req.reply("Done")
 			elif len(arg) == 2 and arg[0] in Global.gamble_list:
@@ -722,6 +744,29 @@ def admin(req, arg):
 				req.reply("Gamble timers: [%s]" % (Global.gamble_list[(arg[0])]))
 			elif len(arg) < 1:
 				req.reply("Gamble timers: [%s]" % (Global.gamble_list))
+		elif command == "temp-gamble-limit":
+			t = time.time()
+			if "@gamblelimitraise" not in Global.gamble_list:
+				Global.gamble_list["@gamblelimitraise"] = {}
+			if "@gamblelimitraise" in Global.gamble_list:
+				if len(arg) == 2 and arg[0] in Global.gamble_list["@gamblelimitraise"] and arg[1] == "del":
+					Global.gamble_list["@gamblelimitraise"].pop(arg[0])
+					req.reply("Done")
+				elif len(arg) == 2:
+					try:
+						maxbet = parse_amount(arg[1])
+					except ValueError as e:
+						return req.notice_private(str(e))
+					# Global.gamble_list["@gamblelimitraise"][arg[0]] = arg[1]
+					Global.gamble_list["@gamblelimitraise"][arg[0]] = {}
+					Global.gamble_list["@gamblelimitraise"][arg[0]]["limit"] = maxbet
+					Global.gamble_list["@gamblelimitraise"][arg[0]]["time"] = t
+					req.reply("Done")
+				elif len(arg) == 1 and arg[0] == "clearall":
+					Global.gamble_list["@gamblelimitraise"] = {}
+					req.reply("Done")
+				elif len(arg) == 1 and arg[0] == "show":
+					req.reply("Gamble limits: %s" % (Global.gamble_list["@gamblelimitraise"]))
 		elif command == "readreset":
 			if len(arg) > 1 and arg[0] in Global.response_read_timers:
 				Global.response_read_timers.pop(arg[0])
@@ -742,10 +787,35 @@ def admin(req, arg):
 				req.reply("Account Cache: %s" % (Global.active_list))
 		elif command == "svsdata":
 			req.reply("svsdata: %s" % (Global.svsdata))
-		elif command == "empty_logfile":
+		elif command == "confetti" or command == "rainbow" or command == "rainbow2":
+			reply = ""
+			text = ""
+			as_rainbow = False
+			for x in range(len(arg)):
+				if x == 12: break
+				word = arg[x][0:20]
+				text = "%s %s" % (text, word)
+			if command == "rainbow2" and len(text) > 10:
+				loops = 3
+			else:
+				loops = 6
+			for i in range(loops):
+				bits = [ "' ", ", ", "~ ", ". ", "* ", "^ " ]
+				bitstring = ""
+				for n in range(7):
+					random.shuffle(bits)
+					thebit = bits[0]
+					bitstring = "%s%s" % (bitstring, coloured_text(text = thebit, channel = req.target))
+				if i == 5 or i == 6 or command == "rainbow" or command == "rainbow2":
+					bitstring = ""
+				if command == "rainbow2":
+					as_rainbow = True
+				reply = "%s%s %s" % (reply, coloured_text(text = text[0:20], rainbow = as_rainbow, channel = req.target), bitstring)
+			req.say(reply)
+		elif command == "empty_logfile" and Irc.is_super_admin(req.source):
 			Logger.clearlog()
 			req.reply("Log Emptied.")
-		elif command == "tipfrombot":
+		elif command == "tipfrombot" and Irc.is_super_admin(req.source):
 			if len(arg) > 1:
 				tip(req, [arg[0], arg[1]], from_instance = True)
 				req.reply("Done")
@@ -764,6 +834,24 @@ def admin(req, arg):
 			Transactions.ping()
 			rpctime = time.time() - t
 			req.reply("Ping: %f, DB read: %f, DB write: %f, RPC: %f" % (pingtime, dbreadtime, dbwritetime, rpctime))
+		elif command == "update-mods" and Irc.is_super_admin(req.source):
+			if len(arg) > 1:
+				if not "admins" in Config.config:
+					Config.config['admins'] = {}
+				if len(arg) > 1 and arg[1] == "del":
+					Config.config["admins"].pop(arg[0].lower(), False)
+				elif len(arg) > 1 and arg[1] == "add":
+					Config.config['admins'].update({arg[0].lower():True})
+				if not Irc.is_admin("dummy@%s" % (arg[0])):
+					output = "%s is NOT admin." % (arg[0])
+				else:
+					output = "%s is admin." % (arg[0])
+				req.reply(output)
+		elif command == "list-mods-iamsure" and Irc.is_super_admin(req.source):
+			if "admins" in Config.config:
+				req.reply("Mods: %s" % (Config.config["admins"]))
+		else:
+			req.reply("You are not authorised to use that command.")
 
 commands["admin"] = admin
 
@@ -834,7 +922,7 @@ def _as(req, arg):
 		args = [a for a in args.split(" ") if len(a) > 0]
 	if command[0] != '_':
 		cmd = commands.get(command.lower(), None)
-		if not cmd.__doc__ or cmd.__doc__.find("admin") == -1 or Irc.is_admin(source):
+		if not cmd.__doc__ or cmd.__doc__.find("admin") == -1 or Irc.is_admin(source) or Irc.is_super_admin(req.source):
 			if cmd:
 				req = Hooks.FakeRequest(req, target, text)
 				Hooks.run_command(cmd, req, args)
