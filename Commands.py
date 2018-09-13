@@ -3,6 +3,15 @@ import sys, os, subprocess, time, datetime, math, pprint, traceback, operator, r
 import Irc, Transactions, Blocknotify, Logger, Global, Hooks, Config
 from collections import OrderedDict
 
+# nickserv_help_string = "You are not identified with freenode services (see /msg NickServ help - https://freenode.net/kb/answer/registration)"
+
+def validate_user(acct):
+	if not acct:
+		return "You are not identified with freenode services (see /msg NickServ help - https://freenode.net/kb/answer/registration)"
+	if Transactions.lock(acct):
+		return "Your account is currently locked"
+	return True
+
 def random_line(file):
 	with open(file,'r') as afile:
 		line = next(afile)
@@ -21,8 +30,8 @@ commands["ping"] = ping
 def balance(req, _):
 	"""%balance - Displays your confirmed and unconfirmed balance"""
 	acct = Irc.account_names([req.nick])[0]
-	if not acct:
-		return req.reply_private("You are not identified with freenode services (see /msg NickServ help)")
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
 	confirmed = Transactions.balance(acct)
 	pending = Transactions.balance_unconfirmed(acct)
 	if pending:
@@ -30,24 +39,33 @@ def balance(req, _):
 	else:
 		req.reply("Your balance is %i %s" % (confirmed, Config.config["coinab"]))
 commands["balance"] = balance
+commands["bal"] = balance
 
 def deposit(req, _):
 	"""%deposit - Displays your deposit address"""
 	acct = Irc.account_names([req.nick])[0]
-	if not acct:
-		return req.reply_private("You are not identified with freenode services (see /msg NickServ help)")
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
 	req.reply("To deposit, send coins to %s (transactions will be credited after %d confirmations)" % (Transactions.deposit_address(acct), Config.config["confirmations"]))
 commands["deposit"] = deposit
 
-def parse_amount(s, acct, all_offset = 0, min_amount = 1, integer_only = True):
-	if s.lower() == "all":
+def parse_amount(s, acct = False, all_offset = 0, min_amount = 1, integer_only = True, roundDown = False):
+	if acct and s.lower() == "all":
 		return max(Transactions.balance(acct) + all_offset, 1)
 	elif s.lower() == "burger":
 		return 4
+	elif s.lower() == "testicle":
+		return 10
 	elif s.lower() == "testicles":
 		return 20
 	elif s.lower() == "penis":
+		return 30
+	elif s.lower() == "anus":
 		return 10
+	elif s.lower() == "vagina":
+		return 100
+	elif s.lower() == "splashback":
+		return 500
 	elif s.lower() == "goldenshower":
 		return 3000
 	elif s.lower() == "bugbounty":
@@ -63,7 +81,7 @@ def parse_amount(s, acct, all_offset = 0, min_amount = 1, integer_only = True):
 			raise ValueError(repr(s) + " - invalid amount (value too large)")
 		if amount < min_amount:
 			raise ValueError(repr(s) + " - invalid amount (must be 1 or more)")
-		if integer_only and not int(amount) == amount:
+		if integer_only and not roundDown and not int(amount) == amount:
 			raise ValueError(repr(s) + " - invalid amount (should be integer)")
 		if len(str(float(amount)).split(".")[1]) > 8:
 			raise ValueError(repr(s) + " - invalid amount (max 8 digits)")
@@ -79,30 +97,28 @@ def is_soak_ignored(account):
 		return False
 
 def withdraw(req, arg):
-	"""%withdraw <address> [amount] - Sends 'amount' coins to the specified address. If no amount specified, sends the whole balance"""
+	"""%withdraw <address> <amount> - Sends 'amount' coins to the specified 'address'. If no 'amount' specified, sends the whole balance"""
 	if len(arg) == 0:
 		return req.reply(gethelp("withdraw"))
 	acct = Irc.account_names([req.nick])[0]
-	if not acct:
-		return req.reply_private("You are not identified with freenode services (see /msg NickServ help)")
-	if Transactions.lock(acct):
-		return req.reply_private("Your account is currently locked")
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
 	if len(arg) == 1:
 		amount = max(Transactions.balance(acct) - Config.config["txfee"], 1)
 	else:
 		try:
 			amount = parse_amount(arg[1], acct, all_offset = -1)
 		except ValueError as e:
-			return req.reply_private(str(e))
+			return req.notice_private(str(e))
 	to = arg[0]
 	if not Transactions.verify_address(to):
-		return req.reply_private("%s doesn't seem to be a valid %s address" % (to, Config.config["coinab"]))
+		return req.notice_private("%s doesn't seem to be a valid %s address" % (to, Config.config["coinab"]))
 	token = Logger.token()
 	try:
 		tx = Transactions.withdraw(token, acct, to, amount)
 		req.reply("Coins have been sent, see https://explorer.theholyroger.com/tx/%s [%s]" % (tx, token))
 	except Transactions.NotEnoughMoney:
-		req.reply_private("You tried to withdraw %i %s (+%.3f %s TX fee) but you only have %i %s" % (amount, Config.config["coinab"], Config.config["txfee"], Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+		req.notice_private("You tried to withdraw %i %s (+%.3f %s TX fee) but you only have %i %s" % (amount, Config.config["coinab"], Config.config["txfee"], Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
 	except Transactions.InsufficientFunds:
 		req.reply("Something went wrong, report this to TheHoliestRoger [%s]" % (token))
 		Logger.irclog("InsufficientFunds while executing '%s' from '%s'" % (req.text, req.nick))
@@ -121,16 +137,24 @@ def target_verify(target, accname):
 	else:
 		return True
 
-def tip(req, arg):
-	"""%tip <target> <amount> - Sends 'amount' coins to the specified nickname. Nickname can be suffixed with @ and an account name, if you want to make sure you are tipping the correct person"""
+def tip(req, arg, from_instance = False):
+	"""%tip <nickname> <amount> - Sends 'amount' coins to the specified 'nickname'. Nickname can be suffixed with @ and an account name, if you want to make sure you are tipping the correct person"""
 	if len(arg) < 2:
 		return req.reply(gethelp("tip"))
 	to = arg[0]
+	if req.cmdalias == "slap":
+		tip_str = "slapped %s across the face with" % (target_nick(to))
+	elif req.cmdalias == "tickle":
+		tip_str = "tickled %s with" % (target_nick(to))
+	else:
+		tip_str = "gifted %s with" % (target_nick(to))
 	acct, toacct = Irc.account_names([req.nick, target_nick(to)])
-	if not acct:
-		return req.reply_private("You are not identified with freenode services (see /msg NickServ help)")
-	if Transactions.lock(acct):
-		return req.reply_private("Your account is currently locked")
+	nick = req.nick
+	if from_instance:
+		acct = Irc.account_names([req.instance])[0]
+		nick = req.instance
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
 	if not toacct:
 		if Transactions.check_exists(to):
 			toacct = to
@@ -139,39 +163,45 @@ def tip(req, arg):
 		else:
 			return req.reply("%s is not identified with freenode services" % (target_nick(to)))
 	if not target_verify(to, toacct):
-		return req.reply_private("Account name mismatch")
+		return req.notice_private("Account name mismatch")
 	try:
-		amount = parse_amount(arg[1], acct)
+		if len(arg) > 2:
+			amount = 0
+			for i in range(1,len(arg)):
+				amount = amount + parse_amount(arg[i], acct)
+		else:
+			amount = parse_amount(arg[1], acct)
 	except ValueError as e:
-		return req.reply_private(str(e))
+		return req.notice_private(str(e))
 	if amount > 99999:
-		return req.say("%s tipped %i %s to %s from alohaferret's cold storage!" % (req.nick, amount, Config.config["coinab"], target_nick(to)))
+		return req.say("%s tipped %i %s to %s from alohaferret's cold storage!" % (nick, amount, Config.config["coinab"], target_nick(to)))
 	token = Logger.token()
 	try:
 		Transactions.tip(token, acct, toacct, amount)
 		if Irc.equal_nicks(req.nick, req.target):
 			req.reply("Done [%s]" % (token))
 		else:
-			req.say("%s tipped %i %s to %s! (/msg %s help) [%s]" % (req.nick, amount, Config.config["coinab"], target_nick(to), req.instance, token))
-		req.privmsg(target_nick(to), "%s has tipped you %i %s (to claim /msg %s help) [%s]" % (req.nick, amount, Config.config["coinab"], req.instance, token), priority = 10)
+			req.say("%s %s %i %s!" % (nick, tip_str, amount, Config.config["coinab"]))
+			# req.notice_private("Tip ID: [%s]" % (token))
+		req.noticemsg(target_nick(to), "%s has tipped you %i %s (to claim /msg %s help) [%s]" % (nick, amount, Config.config["coinab"], req.instance, token), priority = 10)
 	except Transactions.NotEnoughMoney:
-		req.reply_private("You tried to tip %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+		req.notice_private("You tried to tip %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
 commands["tip"] = tip
+commands["slap"] = tip
+commands["tickle"] = tip
 
 def mtip(req, arg):
 	"""%mtip <targ1> <amt1> [<targ2> <amt2> ...] - Send multiple tips at once"""
 	if not len(arg) or len(arg) % 2:
 		return req.reply(gethelp("mtip"))
 	acct = Irc.account_names([req.nick])[0]
-	if not acct:
-		return req.reply_private("You are not identified with freenode services (see /msg NickServ help)")
-	if Transactions.lock(acct):
-		return req.reply_private("Your account is currently locked")
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
 	for i in range(0, len(arg), 2):
 		try:
 			arg[i + 1] = parse_amount(arg[i + 1], acct)
 		except ValueError as e:
-			return req.reply_private(str(e))
+			return req.notice_private(str(e))
 	targets = []
 	amounts = []
 	total = 0
@@ -191,7 +221,7 @@ def mtip(req, arg):
 			total += amount
 	balance = Transactions.balance(acct)
 	if total > balance:
-		return req.reply_private("You tried to tip %i %s but you only have %i %s" % (total, Config.config["coinab"], balance, Config.config["coinab"]))
+		return req.notice_private("You tried to tip %i %s but you only have %i %s" % (total, Config.config["coinab"], balance, Config.config["coinab"]))
 	accounts = Irc.account_names([target_nick(target) for target in targets])
 	totip = {}
 	failed = ""
@@ -211,7 +241,7 @@ def mtip(req, arg):
 		Transactions.tip_multiple(token, acct, totip)
 		tipped += " [%s]" % (token)
 	except Transactions.NotEnoughMoney:
-		return req.reply_private("You tried to tip %i %s but you only have %i %s" % (total, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+		return req.notice_private("You tried to tip %i %s but you only have %i %s" % (total, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
 	output = "Tipped:" + tipped
 	if len(failed):
 		output += "  Failed:" + failed
@@ -260,21 +290,21 @@ def faucet(req, arg):
 	random.seed(curtime*1000)
 	if host in Global.faucet_list and Global.faucet_list[host] != toacct and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
 		Transactions.lock(toacct, True)
-	if not toacct:
-		if Transactions.check_exists(req.nick):
-			toacct = req.nick
+	user_valid = validate_user(toacct)
+	if user_valid != True: 
+		if Transactions.check_exists(req.altnick) and not Transactions.lock(toacct) and not Transactions.lock(req.altnick):
+			toacct = req.altnick
 		else:
-			return req.reply_private("You are not identified with freenode services (see /msg NickServ help)")
+			return req.notice_private(user_valid)
 	if is_soak_ignored(toacct):
 		return
-	if Transactions.lock(toacct):
-		return req.reply_private("Your account is currently locked")
+	if req.target == req.nick and not Irc.is_admin(req.source):
+		return req.reply("Can't faucet in private!")
 	timer = random.randint((60*60),(4*60*60))
 	if toacct in Global.faucet_list and Global.faucet_list[toacct] + timer > curtime:
 		if Global.faucet_list[toacct] + timer > curtime + (5*60) and Global.faucet_list[toacct] + timer < curtime + (40*24*60*60):
 			penalty = random.randint((30*60),(2*60*60))
 			Global.faucet_list[toacct] = Global.faucet_list[toacct] + penalty
-		#difference = (Global.faucet_list[toacct] + 3600 - curtime)/60
 		timerApprx = random.randint(timer,timer+(20*60))
 		difference = (Global.faucet_list[toacct] + timerApprx - curtime)/60
 		if difference > 60:
@@ -299,7 +329,7 @@ def faucet(req, arg):
 	try:
 		amount = parse_amount(amount, acct)
 	except ValueError as e:
-		return req.reply_private(str(e))
+		return req.notice_private(str(e))
 	topwinner_row = Transactions.faucet_board(req.instance,'topwinner')
 	loser_row = Transactions.faucet_board(req.instance,'losers')
 	if not topwinner_row or (amount >= topwinner_row[2] and amount < 1000):
@@ -310,8 +340,9 @@ def faucet(req, arg):
 		newhighest = ""
 	token = Logger.token()
 	try:
-		Transactions.tip(token, acct, toacct, amount)
-		req.say("%s found %i %s ($0.00)! Don't spend it all at once!%s [%s]" % (req.altnick, amount, Config.config["coinab"], newhighest, token))
+		Transactions.tip(token, acct, toacct, amount, tip_source = "@FAUCET")
+		quote = str(random_line('quotes_faucet'))
+		req.say("%s found %i %s ($0.00)! %s%s [%s]" % (req.altnick, amount, Config.config["coinab"], quote, newhighest, token))
 		Global.faucet_list[toacct] = curtime
 		Global.faucet_list[host] = toacct
 		return
@@ -321,164 +352,168 @@ def faucet(req, arg):
 commands["faucet"] = faucet
 
 def active(req, arg):
-        """%active [minutes] - Lists out number of active users over past [x] minutes (default 10)"""
-        acct = Irc.account_names([req.nick])[0]
-        if not acct:
-                return req.reply_private("You are not identified with freenode services (see /msg NickServ help)")
-        for i in range(0, len(arg), 1):
-                try:
-                        arg[i] = parse_amount(arg[i], acct)
-                except ValueError as e:
-                        return req.reply_private(str(e))
-        activeseconds = 3600
-        if len(arg) > 0:
-                activeseconds = int(arg[0]) * 60
-        if activeseconds < 60:
-                activeseconds = 600
-        elif activeseconds > 86400:
-                activeseconds = 86400
-        curtime = time.time()
-        targets = []
-        targetnicks = []
-        for oneactive in Global.account_cache[req.target].keys():
-                try:
-                        curactivetime = curtime - Global.active_list[req.target][oneactive]
-                except:
-                        curactivetime = -1 # if not found default to expired
-                target = oneactive
-                if target != None and target != acct and target != req.nick and target != req.instance and target not in targets and not is_soak_ignored(target) and curactivetime > 0 and curactivetime < activeseconds:
-                        targets.append(target)
-                        if Irc.getacctnick(target) and not Global.acctnick_list[target] == None:
-                                targetnicks.append(str(Global.acctnick_list[target]))
-                        else:
-                                targetnicks.append(str(target))
-        accounts = Irc.account_names(targetnicks)
-        failedcount = 0
-        # we need a count of how many will fail to do calculations so pre-loop list
-        for i in range(len(accounts)):
-                if not accounts[i] or accounts[i] == None:
-                        failedcount += 1
-        output = "I see %d eligible active users in the past %d minutes." % (len(targets) - failedcount,int(activeseconds/60))
-        req.reply(output)
+	"""%active <minutes> - Lists out number of active users over past x 'minutes' (default 1440)"""
+	acct = Irc.account_names([req.nick])[0]
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
+	for i in range(0, len(arg), 1):
+			try:
+					arg[i] = parse_amount(arg[i], acct)
+			except ValueError as e:
+					return req.notice_private(str(e))
+	activeseconds = 86400
+	if len(arg) > 0:
+			activeseconds = int(arg[0]) * 60
+	if activeseconds < 60:
+			activeseconds = 600
+	elif activeseconds > 86400:
+			activeseconds = 86400
+	curtime = time.time()
+	targets = []
+	targetnicks = []
+	for oneactive in Global.account_cache[req.target].keys():
+			try:
+					curactivetime = curtime - Global.active_list[req.target][oneactive]
+			except:
+					curactivetime = -1 # if not found default to expired
+			target = oneactive
+			if target != None and target != acct and target != req.nick and target != req.instance and target not in targets and not is_soak_ignored(target) and curactivetime > 0 and curactivetime < activeseconds:
+					targets.append(target)
+					if Irc.getacctnick(target) and not Global.acctnick_list[target] == None:
+							targetnicks.append(str(Global.acctnick_list[target]))
+					else:
+							targetnicks.append(str(target))
+	accounts = Irc.account_names(targetnicks)
+	failedcount = 0
+	# we need a count of how many will fail to do calculations so pre-loop list
+	for i in range(len(accounts)):
+			if not accounts[i] or accounts[i] == None:
+					failedcount += 1
+	output = "I see %d eligible active users in the past %d minutes." % (len(targets) - failedcount,int(activeseconds/60))
+	req.reply(output)
 commands["active"] = active
 
-def soak(req, arg):
-        """%soak <amt> [minutes] - Sends each active user an equal share of soaked amount"""
-        if not len(arg) or len(arg) % 1:
-                return req.reply(gethelp("soak"))
-        acct = Irc.account_names([req.nick])[0]
-        if not acct:
-                return req.reply_private("You are not identified with freenode services (see /msg NickServ help)")
-        if Transactions.lock(acct):
-                return req.reply_private("Your account is currently locked")
-        for i in range(0, len(arg), 1):
-                try:
-                        arg[i] = parse_amount(arg[i], acct)
-                except ValueError as e:
-                        return req.reply_private(str(e))
-        activeseconds = 3600
-        if len(arg) > 1:
-                activeseconds = int(arg[1]) * 60
-        if activeseconds < 60:
-                activeseconds = 600
-        elif activeseconds > 86400:
-                activeseconds = 86400
-        curtime = time.time()
-        targets = []
-        targetnicks = []
-        failed = ""
-        for oneactive in Global.account_cache[req.target].keys():
-                try:
-                        curactivetime = curtime - Global.active_list[req.target][oneactive]
-                except:
-                        curactivetime = -1 # if not found default to expired
-                target = oneactive
-                if target != None and target != acct and target != req.nick and target != req.instance and target not in targets and not is_soak_ignored(target) and curactivetime > 0 and curactivetime < activeseconds:
-                        targets.append(target)
-                        if Irc.getacctnick(target) and not Global.acctnick_list[target] == None:
-                                targetnicks.append(str(Global.acctnick_list[target]))
-                        else:
-                                targetnicks.append(str(target))
+def soak(req, arg, from_instance = False):
+	"""%soak <amt> <minutes> - Sends each active user an equal share of soaked 'amount'"""
+	if not len(arg) or len(arg) % 1:
+			return req.reply(gethelp("soak"))
+	acct = Irc.account_names([req.nick])[0]
+	nick = req.nick
+	if from_instance:
+		acct = Irc.account_names([req.instance])[0]
+		nick = req.instance
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
+	for i in range(0, len(arg), 1):
+			try:
+					arg[i] = parse_amount(arg[i], acct)
+			except ValueError as e:
+					return req.notice_private(str(e))
+	activeseconds = 86400
+	if len(arg) > 1:
+			activeseconds = int(arg[1]) * 60
+	if activeseconds < 60:
+			activeseconds = 600
+	elif activeseconds > 86400:
+			activeseconds = 86400
+	curtime = time.time()
+	targets = []
+	targetnicks = []
+	failed = ""
+	if req.target == req.nick:
+		return req.reply("Can't soak in private!")
+	for oneactive in Global.account_cache[req.target].keys():
+			try:
+					curactivetime = curtime - Global.active_list[req.target][oneactive]
+			except:
+					curactivetime = -1 # if not found default to expired
+			target = oneactive
+			if target != None and target != acct and target != nick and target != req.instance and target not in targets and not is_soak_ignored(target) and curactivetime > 0 and curactivetime < activeseconds:
+					targets.append(target)
+					if Irc.getacctnick(target) and not Global.acctnick_list[target] == None:
+							targetnicks.append(str(Global.acctnick_list[target]))
+					else:
+							targetnicks.append(str(target))
 
-        accounts = Irc.account_names(targetnicks)
-        failedcount = 0
-        # we need a count of how many will fail to do calculations so pre-loop list
-        for i in range(len(accounts)):
-                if not accounts[i] or accounts[i] == None:
-                        Global.account_cache.setdefault(req.target, {})[targetnicks[i]] = None
-                        failedcount += 1
-        MinActive = 1
-        if (len(targets) - failedcount) < MinActive:
-                return req.reply("This place seems dead. (Maybe try specifying more minutes..)")
-        scraps = 0
-        amount = int(arg[0] / (len(targets) - failedcount))
-        total = (len(targets) - failedcount) * amount
-        scraps = int(arg[0]) - total
-        if scraps <= 0:
-                scraps = 0
-        balance = Transactions.balance(acct)
-        if total <= 0:
-                return req.reply("Unable to soak (Not enough to go around, %d %s Minimum)" % ((len(targets) - failedcount), Config.config["coinab"]))
-        if total + scraps > balance:
-                return req.reply_private("You tried to soak %.0f %s but you only have %.0f %s" % (total+scraps, Config.config["coinab"], balance, Config.config["coinab"]))
-        totip = {}
-        tipped = ""
-        for i in range(len(accounts)):
-                if accounts[i]:
-                        totip[accounts[i]] = amount
-                        tipped += " %s" % (targetnicks[i])
-                elif accounts[i] == None:
-                        failed += " %s (o)" % (targetnicks[i])
-                else:
-                        failed += " %s (u)" % (targetnicks[i])
-        tippednicks = tipped.strip().split(" ")
-        # special case where bot isn't included in soak but there are scraps
-        if req.instance not in accounts and scraps > 0:
-                totip[req.instance] = scraps
-                tipped += " %s (%d scraps)" % (req.instance, scraps)
-        token = Logger.token()
-        try:
-                Transactions.tip_multiple(token, acct, totip)
-        except Transactions.NotEnoughMoney:
-                return req.reply_private("You tried to soak %.0f %s but you only have %.0f %s" % (total, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
-        output = "%s is soaking %d users with %d %s:" % (req.nick, len(tippednicks), amount, Config.config["coinab"])
-        # only show nicks if not too many active, if large enough total (default 1 to always show or change), if nick list changed or if enough time has passed
-        if len(tippednicks) > 100 or total + scraps < 1 or ((acct in Global.nicks_last_shown and Global.nicks_last_shown[acct] == tipped) and (acct+":last" in Global.nicks_last_shown and curtime < Global.nicks_last_shown[acct+":last"] + 600)):
-                output += " (See previous nick list ) [%s]" % (token)
-        else:
-                for onetipped in tippednicks:
-                        if onetipped:
-                                if len(output) < 250:
-                                        output += " " + onetipped
-                                else:
-                                        req.reply(output)
-                                        output = " " + onetipped
-                Global.nicks_last_shown[acct] = tipped
-                Global.nicks_last_shown[acct+":last"] = curtime
-        req.say(output)
-        Logger.log("c","SOAK %s %s skipped: %s" % (token, repr(targetnicks), repr(failed)))
+	accounts = Irc.account_names(targetnicks)
+	failedcount = 0
+	# we need a count of how many will fail to do calculations so pre-loop list
+	for i in range(len(accounts)):
+			if not accounts[i] or accounts[i] == None:
+					Global.account_cache.setdefault(req.target, {})[targetnicks[i]] = None
+					failedcount += 1
+	MinActive = 1
+	if (len(targets) - failedcount) < MinActive:
+			return req.reply("This place seems dead. (Maybe try specifying more minutes..)")
+	scraps = 0
+	amount = int(arg[0] / (len(targets) - failedcount))
+	total = (len(targets) - failedcount) * amount
+	scraps = int(arg[0]) - total
+	if scraps <= 0:
+			scraps = 0
+	balance = Transactions.balance(acct)
+	if total <= 0:
+			return req.reply("Unable to soak (Not enough to go around, %d %s Minimum)" % ((len(targets) - failedcount), Config.config["coinab"]))
+	if total + scraps > balance:
+			return req.notice_private("You tried to soak %.0f %s but you only have %.0f %s" % (total+scraps, Config.config["coinab"], balance, Config.config["coinab"]))
+	totip = {}
+	tipped = ""
+	for i in range(len(accounts)):
+			if accounts[i]:
+					totip[accounts[i]] = amount
+					tipped += " %s" % (targetnicks[i])
+			elif accounts[i] == None:
+					failed += " %s (o)" % (targetnicks[i])
+			else:
+					failed += " %s (u)" % (targetnicks[i])
+	tippednicks = tipped.strip().split(" ")
+	# special case where bot isn't included in soak but there are scraps
+	if req.instance not in accounts and scraps > 0:
+			totip[req.instance] = scraps
+			tipped += " %s (%d scraps)" % (req.instance, scraps)
+	token = Logger.token()
+	try:
+			Transactions.tip_multiple(token, acct, totip, tip_source = "@SOAK")
+	except Transactions.NotEnoughMoney:
+			return req.notice_private("You tried to soak %.0f %s but you only have %.0f %s" % (total, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+	output = "%s is soaking %d users with %d %s:" % (nick, len(tippednicks), amount, Config.config["coinab"])
+	# only show nicks if not too many active, if large enough total (default 1 to always show or change), if nick list changed or if enough time has passed
+	if len(tippednicks) > 100 or total + scraps < 1 or ((acct in Global.nicks_last_shown and Global.nicks_last_shown[acct] == tipped) and (acct+":last" in Global.nicks_last_shown and curtime < Global.nicks_last_shown[acct+":last"] + 600)):
+			output += " (See previous nick list ) [%s]" % (token)
+	else:
+			for onetipped in tippednicks:
+					if onetipped:
+							if len(output) < 250:
+									output += " " + onetipped
+							else:
+									req.reply(output)
+									output = " " + onetipped
+			Global.nicks_last_shown[acct] = tipped
+			Global.nicks_last_shown[acct+":last"] = curtime
+	req.say(output)
+	Logger.log("c","SOAK %s %s skipped: %s" % (token, repr(targetnicks), repr(failed)))
 commands["soak"] = soak
 
 def soakignore(req, arg):
-        """%soakignore <acct> [add/del] - Ignore ACCOUNT (not nick) from soak/rain/etc. Requires manual admin save to be perm"""
-        if not len(arg) or len(arg) % 1:
-                return req.reply(gethelp("soakignore"))
-        acct = Irc.account_names([req.nick])[0]
-        if not acct:
-                return req.reply_private("You are not identified with freenode services (see /msg NickServ help)")
-        if not Irc.is_admin(req.source):
-                return req.reply_private("You are not authorized to use this command")
-        if not "soakignore" in Config.config:
-                Config.config['soakignore'] = {}
-        if len(arg) > 1 and arg[1] == "del":
-                Config.config["soakignore"].pop(arg[0].lower(), False)
-        elif len(arg) > 1 and arg[1] == "add":
-                Config.config['soakignore'].update({arg[0].lower():True})
-        if not is_soak_ignored(arg[0]):
-                output = arg[0] + " is NOT ignored."
-        else:
-                output = arg[0] + " is ignored."
-        req.reply(output)
+	"""%soakignore <acct> [add/del] - Ignore ACCOUNT (not nick) from soak/rain/etc. Requires manual admin save to be perm"""
+	if not len(arg) or len(arg) % 1:
+		return req.reply(gethelp("soakignore"))
+	acct = Irc.account_names([req.nick])[0]
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
+	if not Irc.is_admin(req.source):
+		return req.notice_private("You are not authorized to use this command")
+	if not "soakignore" in Config.config:
+		Config.config['soakignore'] = {}
+	if len(arg) > 1 and arg[1] == "del":
+		Config.config["soakignore"].pop(arg[0].lower(), False)
+	elif len(arg) > 1 and arg[1] == "add":
+		Config.config['soakignore'].update({arg[0].lower():True})
+	if not is_soak_ignored(arg[0]):
+		output = arg[0] + " is NOT ignored."
+	else:
+		output = arg[0] + " is ignored."
+	req.reply(output)
 commands["soakignore"] = soakignore
 
 def donate(req, arg):
@@ -486,21 +521,19 @@ def donate(req, arg):
 	if len(arg) < 1:
 		return req.reply(gethelp("donate"))
 	acct = Irc.account_names([req.nick])[0]
-	if not acct:
-		return req.reply_private("You are not identified with freenode services (see /msg NickServ help)")
-	if Transactions.lock(acct):
-		return req.reply_private("Your account is currently locked")
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
 	toacct = req.instance
 	try:
 		amount = parse_amount(arg[0], acct)
 	except ValueError as e:
-		return req.reply_private(str(e))
+		return req.notice_private(str(e))
 	token = Logger.token()
 	try:
 		Transactions.tip(token, acct, toacct, amount)
 		req.reply("Donated %i %s, thank you very much for your donation [%s]" % (amount, Config.config["coinab"], token))
 	except Transactions.NotEnoughMoney:
-		req.reply_private("You tried to donate %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+		req.notice_private("You tried to donate %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
 commands["donate"] = donate
 
 def gethelp(name):
@@ -518,12 +551,12 @@ def _help(req, arg):
 			req.reply(h)
 	else:
 		if not Irc.equal_nicks(req.target, req.nick):
-			return req.reply("I'm %s, a %s tipbot. For more info do /msg %s help" % (req.instance, Config.config["coinab"], req.instance))
+			req.reply("I'm %s, a %s tipbot. For more info check your PMs" % (req.instance, Config.config["coinab"]))
 		acct = Irc.account_names([req.nick])[0]
 		if acct:
 			ident = "you're identified as \2" + acct + "\2"
 		else:
-			ident = "you're not identified"
+			ident = "you're \2NOT\2 identified!! :O \2SEE %sREGISTER\2" % (Config.config["prefix"])
 		# List of commands to not show users in help
 		hidecmd = ["as", "admin"]
 		allcmd = ""
@@ -531,16 +564,16 @@ def _help(req, arg):
 		for onecmd in sortedcmd:
 			if not onecmd in hidecmd:
 				allcmd += Config.config["prefix"][0] + onecmd + " "
-		req.say("I'm %s, I'm a %s tipbot. To get help about a specific command, say: \2%shelp <command>\2" % (req.instance, Config.config["coinab"], Config.config["prefix"]))
-		req.say("Commands: \2%s\2" % (allcmd))
-		req.say("Note that to receive or send tips you should be identified with freenode services (%s). Please consider donating with \2%sdonate\2." % (ident, Config.config["prefix"]))
-		req.say("For any support questions, including those related to lost coins, ask \2Roger Ver\2")
+		req.reply_private("I'm %s, I'm a %s tipbot. To get help about a command, say: \2%shelp <command>\2" % (req.instance, Config.config["coinab"], Config.config["prefix"]))
+		req.reply_private("Commands: \2%s\2" % (allcmd))
+		req.reply_private("For any support questions, including those related to lost coins, ask \2Roger Ver\2")
+		req.reply_private("Note that to receive or send %s you MUST be identified with freenode services (%s)." % (Config.config["coinab"], ident))
 commands["help"] = _help
 
 def admin(req, arg):
 	"""
 	admin"""
-	if len(arg):
+	if len(arg) and Irc.is_admin(req.source):
 		command = arg[0]
 		arg = arg[1:]
 		if command == "reload":
@@ -645,11 +678,6 @@ def admin(req, arg):
 				else:
 					req.reply("%s not found in database." % (target))
 		elif command == "blocks":
-			# try:
-			# 	info, hashd = Transactions.get_info()
-			# except:
-			# 	info, hashd = Transactions.get_mining_info()
-
 			mining_info, net_info, hashd = Transactions.get_all_info()
 			hashb = Transactions.lastblock.encode("ascii")
 			req.reply("Best block: %s, Last tx block: %s, Blocks: %s" % (hashd, hashb, mining_info.blocks))
@@ -669,18 +697,73 @@ def admin(req, arg):
 			output = subprocess.check_output(["git", "pull"])
 			req.reply("%s" % (output) if output else "Failed")
 		elif command == "host":
-			if len(arg) > 1:
+			if len(arg) > 1 and arg[0] in Global.faucet_list:
 				Global.faucet_list[arg[0]] = arg[1]
 				req.reply("Done")
-			elif len(arg):
+			elif len(arg) and arg[0] in Global.faucet_list:
 				req.reply("Host [%s] assigned to [%s]" % (arg[0], Global.faucet_list[arg[0]]) if arg[0] in Global.faucet_list else "Host [%s] does not exist" % (arg[0]))
 		elif command == "faucetreset":
-			if len(arg) > 1:
+			if len(arg) > 1 and arg[0] in Global.faucet_list:
 				Global.faucet_list.pop(arg[0])
 				# Global.faucet_list[arg[0]] = 0
 				req.reply("Done")
-			elif len(arg):
+			elif len(arg) and arg[0] in Global.faucet_list:
 				req.reply("Faucet [%s] timer at [%s]" % (arg[0], datetime.datetime.fromtimestamp(int(Global.faucet_list[arg[0]])).strftime('%Y-%m-%d %H:%M')) if arg[0] in Global.faucet_list else "User [%s] does not exist" % (arg[0]))
+		elif command == "gamblereset":
+			if len(arg) == 2 and arg[0] in Global.gamble_list:
+				Global.gamble_list.pop(arg[0])
+				# Global.faucet_list[arg[0]] = 0
+				req.reply("Done")
+			elif len(arg) == 3 and arg[0] in Global.gamble_list and arg[1] in Global.gamble_list[(arg[0])]:
+				Global.gamble_list[(arg[0])].pop(arg[1])
+				# Global.faucet_list[arg[0]] = 0
+				req.reply("Done")
+			elif len(arg) == 2 and arg[0] in Global.gamble_list:
+				req.reply("Gamble [%s] timer at [%s]" % (arg[1], datetime.datetime.fromtimestamp(int(Global.gamble_list[(arg[0])][(arg[1])])).strftime('%Y-%m-%d %H:%M')) if arg[1] in Global.gamble_list[(arg[0])] else "User [%s] does not exist" % (arg[1]))
+			elif len(arg) == 1 and arg[0] in Global.gamble_list:
+				req.reply("Gamble timers: [%s]" % (Global.gamble_list[(arg[0])]))
+			elif len(arg) < 1:
+				req.reply("Gamble timers: [%s]" % (Global.gamble_list))
+		elif command == "readreset":
+			if len(arg) > 1 and arg[0] in Global.response_read_timers:
+				Global.response_read_timers.pop(arg[0])
+				# Global.faucet_list[arg[0]] = 0
+				req.reply("Done")
+			elif len(arg) and arg[0] in Global.response_read_timers:
+				req.reply("Read Timer: %s" % (Global.response_read_timers[arg[0]]))
+			else:
+				req.reply("Read Timers: %s" % (Global.response_read_timers))
+		elif command == "acc_cache":
+			# if len(arg) > 1 and arg[0] in Global.response_read_timers:
+			# 	Global.response_read_timers.pop(arg[0])
+			# 	# Global.faucet_list[arg[0]] = 0
+			# 	req.reply("Done")
+			if len(arg) and arg[0] in Global.account_cache:
+				req.reply("Account Cache (%s): %s" % (arg[0],Global.account_cache[arg[0]]))
+			else:
+				req.reply("Account Cache: %s" % (Global.account_cache))
+		elif command == "active_list":
+			# if len(arg) > 1 and arg[0] in Global.response_read_timers:
+			# 	Global.response_read_timers.pop(arg[0])
+			# 	# Global.faucet_list[arg[0]] = 0
+			# 	req.reply("Done")
+			if len(arg) and arg[0] in Global.active_list:
+				req.reply("Account Cache (%s): %s" % (arg[0],Global.active_list[arg[0]]))
+			else:
+				req.reply("Account Cache: %s" % (Global.active_list))
+		elif command == "svsdata":
+			# if len(arg) > 1 and arg[0] in Global.response_read_timers:
+			# 	Global.response_read_timers.pop(arg[0])
+			# 	# Global.faucet_list[arg[0]] = 0
+			# 	req.reply("Done")
+			# if len(arg) and arg[0] in Global.svsdata:
+			# 	req.reply("Account Cache (%s): %s" % (arg[0],Global.active_list[arg[0]]))
+			# else:
+			req.reply("svsdata: %s" % (Global.svsdata))
+		elif command == "tipfrombot":
+			if len(arg) > 1:
+				tip(req, [arg[0], arg[1]], from_instance = True)
+				req.reply("Done")
 		elif command == "ping":
 			t = time.time()
 			Irc.account_names(["."])
@@ -703,6 +786,8 @@ def price(req, arg):
 	"""%price - Checks current price of ROGER."""
 	return req.say("Current price of %s: $0.00, stablecoin (1 %s is worth 1 bcash)" % (Config.config["coinab"], Config.config["coinab"]))
 commands["price"] = price
+commands["value"] = price
+commands["val"] = price
 
 def register(req, arg):
 	"""%register - How to register with freenode."""
@@ -745,6 +830,9 @@ def rogerme(req, arg):
 			video = str(random_line('videos_roger'))
 			return req.say("Here's your video clip: %s - Enjoy!" % (video))
 commands["rogerme"] = rogerme
+commands["roger"] = rogerme
+
+
 
 def _as(req, arg):
 	"""

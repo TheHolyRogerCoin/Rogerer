@@ -86,7 +86,7 @@ def balance_unconfirmed(account):
 
 def check_exists(target): 
 	cur = database().cursor()
-	cur.execute("SELECT balance FROM accounts WHERE account = %s", (target,))
+	cur.execute("SELECT balance FROM accounts WHERE lower(account) = %s", (target.lower(),))
 	if not cur.rowcount:
 		return False
 	return True
@@ -95,20 +95,20 @@ def check_exists(target):
 def faucet_board(instance, category = 'jackpot'): 
 	cur = database().cursor()
 	if category == 'losers':
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s ORDER BY amount ASC, timestamp DESC limit 1", (instance,))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s ORDER BY amount ASC, timestamp DESC limit 1", ("@FAUCET", instance))
 	elif category == 'topwinner':
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount < 1000 ORDER BY amount DESC, timestamp DESC limit 1", (instance,))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount < 1000 ORDER BY amount DESC, timestamp DESC limit 1", ("@FAUCET", instance))
 	elif category == 'runnerup1':
 		# cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount >= 3001 AND amount <= 5000 ORDER BY amount DESC, timestamp DESC limit 1", (instance,))
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount >= 1000 AND amount <= 2000 ORDER BY timestamp DESC limit 1", (instance,))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount >= 1000 AND amount <= 2000 ORDER BY timestamp DESC limit 1", ("@FAUCET", instance))
 	elif category == 'jackpot':
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount >= 6000 ORDER BY timestamp DESC limit 1", (instance,))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount >= 6000 ORDER BY timestamp DESC limit 1", ("@FAUCET", instance))
 	if cur.rowcount:
 		return cur.fetchone()
 	else:
 		return False
 
-def tip(token, source, target, amount): 
+def tip(token, source, target, amount, tip_source = None): 
 	db = database()
 	cur = db.cursor()
 	cur.execute("SELECT * FROM accounts WHERE account = ANY(%s) FOR UPDATE", (sorted([target, source]),))
@@ -121,10 +121,10 @@ def tip(token, source, target, amount):
 	cur.execute("UPDATE accounts SET balance = balance + %s WHERE account = %s", (amount, target)) 
 	if not cur.rowcount:
 		cur.execute("INSERT INTO accounts VALUES (%s, %s)", (target, amount))
-	txlog(cur, token, amount, src = source, dest = target)
+	txlog(cur, token, amount, src = source, dest = target, address = tip_source)
 	db.commit()
 
-def tip_multiple(token, source, dict):
+def tip_multiple(token, source, dict, tip_source = None):
 	db = database()
 	cur = db.cursor()
 	cur.execute("SELECT * FROM accounts WHERE account = ANY(%s) FOR UPDATE", (sorted(dict.keys() + [source]),))
@@ -142,7 +142,7 @@ def tip_multiple(token, source, dict):
 		if not cur.rowcount:
 			cur.execute("INSERT INTO accounts VALUES (%s, %s)", (target, amount))
 	for target in dict:
-		txlog(cur, token, dict[target], src = source, dest = target)
+		txlog(cur, token, dict[target], src = source, dest = target, address = tip_source)
 	db.commit()
 
 def withdraw(token, account, address, amount): 
@@ -230,6 +230,7 @@ def get_all_info():
 	return (m_info, n_info, bestblockhash)
 
 def lock(account, state = None):
+	if not account: return False
 	if state == None:
 		cur = database().cursor()
 		cur.execute("SELECT * FROM locked WHERE account = %s", (account,))

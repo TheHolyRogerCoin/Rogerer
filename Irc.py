@@ -298,7 +298,7 @@ def on_SIGHUP(signum, frame):
 	cmd = Commands.commands.get("admin")
 	if cmd and Config.config.get("irclog"):
 		Logger.irclog("Received SIGHUP, reloading Config")
-		req = Hooks.Request(Config.config["irclog"][0], Config.config["irclog"][1], "@SIGHUP", "@SIGHUP", "SIGHUP")
+		req = Hooks.Request(Config.config["irclog"][0], Config.config["irclog"][1], "@SIGHUP", "@SIGHUP", "SIGHUP", "admin")
 		Hooks.run_command(cmd, req, ["reload", "Config"])
 
 def manager():
