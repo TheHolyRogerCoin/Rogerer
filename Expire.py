@@ -14,8 +14,7 @@ def expirer(event):
 			cur = Transactions.database().cursor()
 			cur.execute("SELECT account FROM accounts WHERE (((last_seen < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - interval '10 weeks')) IS NOT FALSE AND (last_check < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - interval '6 hours')) IS NOT FALSE) OR ((last_seen > EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - interval '10 weeks')) IS NOT FALSE AND (last_check < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - interval '1 week')) IS NOT FALSE)) AND NOT EXISTS (SELECT * FROM locked WHERE locked.account = accounts.account) AND account NOT LIKE '@%' ORDER BY COALESCE(last_check, 0) ASC, balance DESC LIMIT 1")
 			if cur.rowcount:
-				nick = Irc.sanitize_nickname(cur.fetchone()[0])
-				Irc.instance_send(Config.config["svs"], ("NS", "INFO " + nick))
+				Irc.instance_send(Config.config["svs"], ("NS", "INFO " + Irc.sanitize_nickname(cur.fetchone()[0])))
 	except Exception as e:
 		type, value, tb = sys.exc_info()
 		Logger.log("te", "ERROR in expirer")
