@@ -1010,7 +1010,7 @@ def admin(req, arg):
 			if dust > 0:
 				token = Logger.token()
 				Transactions.magic_tip(token, req.instance, dust)
-				req.reply("Adding %s to bot balance." % (parse_amount(dust, backwards=True)))
+				req.reply("Adding %s to bot balance." % (print_amount(dust)))
 			else:
 				req.reply("No dust!")
 		elif command == "game-stats":
