@@ -962,6 +962,18 @@ def admin(req, arg):
 				oldplaces = int(arg[1])
 				Transactions.updatedecimals(oldplaces = oldplaces)
 				req.reply("Database updated, balances switched from old decimal places of %i to %i" % (oldplaces,Config.config["decimalplaces"]))
+		elif command == "grab-dust" and Irc.is_super_admin(req.source):
+			database, theholyrogerd = Transactions.balances()
+			rounding_num=decimal.Decimal(Transactions.roundingnum())
+			node_bal=theholyrogerd*rounding_num
+			bot_bal=database
+			dust=int(int(node_bal)-int(bot_bal))
+			if dust > 0:
+				token = Logger.token()
+				Transactions.magic_tip(token, req.instance, dust)
+				req.reply("Adding %s to bot balance." % (parse_amount(dust, backwards=True)))
+			else:
+				req.reply("No dust!")
 		elif command == "game-stats":
 			"""game-stats GAME NICK X [DAYS/HOURS/MINUTES]"""
 			if len(arg) < 2: return

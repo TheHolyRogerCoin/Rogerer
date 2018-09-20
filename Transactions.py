@@ -242,6 +242,16 @@ def tip_multiple(token, source, dict, tip_source = None):
 	db.commit()
 	db.close()
 
+def magic_tip(token, target, amount):
+	source="@MAGIC_TIP"
+	db = database()
+	cur = db.cursor()
+	cur.execute("SELECT * FROM accounts WHERE account = %s FOR UPDATE", (target,))
+	cur.execute("UPDATE accounts SET balance = balance + %s WHERE account = %s", (amount, target)) 
+	txlog(cur, token, amount, src = source, dest = target)
+	db.commit()
+	db.close()
+
 def withdraw(token, account, address, amount):
 	db = database()
 	cur = db.cursor()
