@@ -255,9 +255,12 @@ def join(instance, source, channel, account, _):
 	with Global.account_lock:
 		if nick  == instance:
 			Global.account_cache[channel] = {}
-		Global.account_cache[channel][nick] = account	
+		Global.account_cache[channel][nick] = account
+		Global.nick_source_cache[nick] = source
+		if account != False and account != None:
+			Global.acctnick_list[account] = nick
 		for channel in Global.account_cache:
-			if nick in Global.account_cache[channel]:
+			if nick in Global.account_cache[channel] and channel[0] != "@":
 				if channel in Config.config["welcome_channels"] and (not account or not Transactions.check_exists(account)) and not Transactions.check_exists(nick) and (nick not in Global.welcome_list or Global.welcome_list[nick] + (60*10) < curtime):
 					Global.welcome_list[nick] = curtime
 					# Irc.instance_send(instance, ("PRIVMSG", channel, "Welcome our newest Rogeteer - %s! Try &help, &rogerme and &faucet to get started!" % (nick)), priority = 20, lock = False)
@@ -320,12 +323,12 @@ def quit(instance, source, _):
 					Logger.log("w", "Removing cache for " + channel)
 			return
 		for channel in Global.account_cache:
-			if nick in Global.account_cache[channel]:
+			if nick in Global.account_cache[channel] and channel[0] != "@":
 				account = Global.account_cache[channel][nick]
 				if account != None:
 					break
 		for channel in Global.account_cache:
-			if nick in Global.account_cache[channel]:
+			if nick in Global.account_cache[channel] and channel[0] != "@":
 				del Global.account_cache[channel][nick]
 				Logger.log("w", "Removing %s from %s" % (nick, channel))
 	if account != None and account != False:
@@ -339,7 +342,7 @@ def account(instance, source, account):
 	nick = Irc.get_nickname(source, "")
 	with Global.account_lock:
 		for channel in Global.account_cache:
-			if nick in Global.account_cache[channel]:
+			if nick in Global.account_cache[channel] and channel[0] != "@":
 				if channel in Config.config["welcome_channels"] and not account and not Transactions.check_exists(nick) and (nick not in Global.welcome_list or Global.welcome_list[nick] + (60*10) < curtime):
 					Global.welcome_list[nick] = curtime
 					Irc.instance_send(instance, ("PRIVMSG", channel, "Welcome our newest Rogeteer - %s! Try &help, &rogerme and &faucet to get started!" % (nick)), priority = 20, lock = False)
@@ -349,6 +352,9 @@ def account(instance, source, account):
 					Irc.instance_send(instance, ("NOTICE", nick, "Welcome back %s! %s" % (nick, welcome_str)), priority = 20, lock = False)
 				Global.account_cache[channel][nick] = account
 				Logger.log("w", "Propagating %s=%s into %s" % (nick, account, channel))
+		Global.nick_source_cache[nick] = source
+		if account != False and account != None:
+			Global.acctnick_list[account] = nick
 	if account != None and account != False:
 		Expire.bump_last(account)
 hooks["ACCOUNT"] = account
@@ -360,10 +366,13 @@ def _nick(instance, source, newnick):
 		for channel in Global.account_cache:
 			if nick in Global.account_cache[channel]:
 				account = Global.account_cache[channel][nick]
+				Global.nick_source_cache[nick] = source
+				if account != False and account != None and channel[0] != "@":
+					Global.acctnick_list[account] = newnick
 				if account != None:
 					break
 		for channel in Global.account_cache:
-			if nick in Global.account_cache[channel]:
+			if nick in Global.account_cache[channel] and channel[0] != "@":
 				Global.account_cache[channel][newnick] = Global.account_cache[channel][nick]
 				Logger.log("w", "%s -> %s in %s" % (nick, newnick, channel))
 				del Global.account_cache[channel][nick]

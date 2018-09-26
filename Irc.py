@@ -75,7 +75,7 @@ def account_names(nicks):
 		with Global.account_lock:
 			for channel in Global.account_cache:
 				for nick in Global.account_cache[channel]:
-					if Global.account_cache[channel][nick] != None and equal_nicks(nick, nicks[i]):
+					if Global.account_cache[channel][nick] != None and equal_nicks(nick, nicks[i]) and channel[0] != "@":
 						results[i] = Global.account_cache[channel][nick]
 						Logger.log("w", "Found %s in cache for %s : %s=%s" % (nicks[i], channel, nick, repr(results[i])))
 						found = True
@@ -101,7 +101,7 @@ def account_names(nicks):
 			with Global.account_lock:
 				for channel in Global.account_cache:
 					for nick in Global.account_cache[channel]:
-						if equal_nicks(nick, nicks[i]):
+						if equal_nicks(nick, nicks[i]) and channel[0] != "@":
 							Global.account_cache[channel][nick] = account
 							Logger.log("w", "Propagating %s=%s into %s" % (nicks[i], repr(account), channel))
 			results[i] = account
@@ -350,7 +350,7 @@ def manager():
 				with Global.account_lock:
 					chans = []
 					for channel in Global.account_cache:
-						if cmd[1] in Global.account_cache[channel]:
+						if cmd[1] in Global.account_cache[channel] and channel[0] != "@":
 							chans.append(channel)
 					for channel in chans:
 						del Global.account_cache[channel]
