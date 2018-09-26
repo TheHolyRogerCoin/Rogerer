@@ -723,6 +723,34 @@ def admin(req, arg):
 				except SyntaxError:
 					exec("Config.config " + " ".join(arg))
 					req.reply("Done")
+		elif command == "vars" and Irc.is_super_admin(req.source):
+			if arg[0] == "dump":
+				with open("Var_Dump.py", "w") as f:
+					f.write("cached_active_list = " + pprint.pformat(Global.active_list) + "\n")
+					f.write("cached_faucet_list = " + pprint.pformat(Global.faucet_list) + "\n")
+					f.write("cached_gamble_list = " + pprint.pformat(Global.gamble_list) + "\n")
+					f.write("cached_acctnick_list = " + pprint.pformat(Global.acctnick_list) + "\n")
+					if hasattr(Global, 'nick_source_cache'):
+						f.write("cached_nick_source_cache = " + pprint.pformat(Global.nick_source_cache) + "\n")
+					if len(arg) == 2:
+						if arg[1] == "acctcache":
+							f.write("cached_account_cache = " + pprint.pformat(Global.account_cache) + "\n")
+				req.reply("Done")
+			if arg[0] == "load":
+				if os.path.exists('Var_Dump.py'):
+					import Var_Dump
+					reload(sys.modules['Var_Dump'])
+					if hasattr(Var_Dump, 'cached_active_list'): Global.active_list = Var_Dump.cached_active_list
+					if hasattr(Var_Dump, 'cached_faucet_list'): Global.faucet_list = Var_Dump.cached_faucet_list
+					if hasattr(Var_Dump, 'cached_gamble_list'): Global.gamble_list = Var_Dump.cached_gamble_list
+					if hasattr(Var_Dump, 'cached_acctnick_list'): Global.acctnick_list = Var_Dump.cached_acctnick_list
+					if hasattr(Global, 'nick_source_cache') and hasattr(Var_Dump, 'cached_nick_source_cache'):
+						Global.nick_source_cache = Var_Dump.cached_nick_source_cache
+					if len(arg) == 2:
+						if arg[1] == "acctcache" and hasattr(Var_Dump, 'cached_account_cache'):
+							Global.account_cache = Var_Dump.cached_account_cache
+					del Var_Dump
+					req.reply("Done")
 		elif command == "join" and Irc.is_super_admin(req.source):
 			Irc.instance_send(req.instance, ("JOIN", arg[0]), priority = 0.1)
 		elif command == "part" and Irc.is_super_admin(req.source):
