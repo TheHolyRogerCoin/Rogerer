@@ -984,6 +984,9 @@ def admin(req, arg):
 		elif command == "list-mods-iamsure" and Irc.is_super_admin(req.source):
 			if "admins" in Config.config:
 				req.reply("Mods: %s" % (Config.config["admins"]))
+		elif command == "who" and Irc.is_super_admin(req.source):
+			Irc.instance_send(req.instance, ("WHO", arg[0]))
+			req.reply("Done")
 		elif command == "maintenance-mode" and Irc.is_super_admin(req.source):
 			if arg[0] == "on":
 				Config.config["maintenance_mode"] = True
