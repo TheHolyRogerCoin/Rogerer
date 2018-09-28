@@ -816,9 +816,6 @@ def admin(req, arg):
 			mining_info, net_info, hashd = Transactions.get_all_info()
 			hashb = Transactions.lastblock.encode("ascii")
 			req.reply("Best block: %s, Last tx block: %s, Blocks: %s" % (hashd, hashb, mining_info.blocks))
-		elif command == "info":
-			mining_info, net_info, hashd = Transactions.get_all_info()
-			req.reply("TheHolyRogerCoin (ROGER) v3r | Decimals: %i | Client: %s | Proto: %s | Blocks: %s | Diff: %.2f | Network Hash: %.3f GH | Conns: %s " % (Transactions.roundingnum(),net_info.version, net_info.protocolversion, mining_info.blocks, mining_info.difficulty, (mining_info.networkhashps/1000000000), net_info.connections))
 		elif command == "lock":
 			if len(arg) > 1:
 				if arg[1] == "on":
@@ -1139,9 +1136,16 @@ def register(req, arg):
 commands["register"] = register
 
 def info(req, arg):
-	"""%info - ROGER network info."""
-	mining_info, net_info, hashd = Transactions.get_all_info()
-	return req.reply("TheHolyRogerCoin (ROGER) v3r | Client: %s | Protocol: %s | Blocks: %s | Diff: %.2f | Net Hash: %.3f GH | Net Connections: %s " % (net_info.version, net_info.protocolversion, mining_info.blocks, mining_info.difficulty, (mining_info.networkhashps/1000000000), net_info.connections))
+	"""%info [all] - ROGER network info."""
+	mining_info, net_info, hashd, hashdtime, dbhashtime = Transactions.get_all_info()
+	best_block_time_diff = int(time.time())-int(hashdtime)
+	db_block_time_diff = int(time.time())-int(dbhashtime)
+	client_proto = "Client: %s | Protocol: %s | " % (net_info.version, net_info.protocolversion)
+	net_conn = " | Net Connections: %s" % (net_info.connections)
+	if len(arg) < 1 or not arg[0] == "all":
+		client_proto = ""
+		net_conn = ""
+	return req.reply("TheHolyRogerCoin (ROGER) v3r | %sBlocks: %s | Last Block: %s | Confirmation time: %s | Diff: %.2f | Net Hash: %.3f GH%s" % (client_proto, mining_info.blocks, print_friendlyTime(best_block_time_diff), print_friendlyTime(db_block_time_diff), mining_info.difficulty, (mining_info.networkhashps/1000000000), net_conn))
 commands["info"] = info
 
 def rogerme(req, arg):
@@ -1151,6 +1155,7 @@ def rogerme(req, arg):
 	if len(arg) == 1:
 		command = arg[0]
 		if command == "info" or command == "help":
+			info(req, [])
 			return req.say("The Holy Roger Coin (ROGER) is developed with a focus on outing scams and trolling The Fake Roger. More info: https://theholyroger.com/The_Holy_Roger_Coin")
 		elif command == "address" or command == "paper":
 			return req.say("ROGER Paper Wallet: https://address.theholyroger.com")

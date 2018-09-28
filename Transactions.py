@@ -22,23 +22,6 @@ InsufficientFunds = theholyrogerrpc.exceptions.InsufficientFunds
 
 unconfirmed = {}
 
-# Monkey-patching theholyrogerrpc
-def patchedlistsinceblock(self, block_hash, minconf=1):
-	try:
-		res = self.proxy.listsinceblock(block_hash, minconf)
-		res['transactions'] = [theholyrogerrpc.connection.TransactionInfo(**x) for x in res['transactions']]
-		return res
-	except JSONRPCException as e:
-		pass
-	except:
-		pass
-
-try:
-	daemon().listsinceblock("0", 1)
-except TypeError:
-	theholyrogerrpc.connection.TheHolyRogerConnection.listsinceblock = patchedlistsinceblock
-# End of monkey-patching
-
 
 def checkdecimals(update = False):
 	db = database()
@@ -87,7 +70,8 @@ def txlog(cursor, token, amt, tx = None, address = None, src = None, dest = None
 
 def notify_block(): 
 	global lastblock, unconfirmed
-	lb = daemon().listsinceblock(lastblock, Config.config["confirmations"])
+	daemonrpc = daemon()
+	lb = daemonrpc.listsinceblock(lastblock, Config.config["confirmations"])
 	db = database()
 	cur = db.cursor()
 	txlist = []
@@ -324,6 +308,11 @@ def balances():
 	db.close()
 	return (balances, theholyrogerd)
 
+def get_block_time(bhash):
+	block = daemon().getblock(bhash)
+	blocktime = block["time"]
+	return (blocktime)
+
 def get_info():
 	info = daemon().getinfo()
 	return (info, daemon().getblockhash(info.blocks).encode("ascii"))
@@ -338,7 +327,9 @@ def get_all_info():
 	# allinfo = minfo.copy()
 	# allinfo.update(ninfo)
 	bestblockhash = daemon().getblockhash(m_info.blocks).encode("ascii")
-	return (m_info, n_info, bestblockhash)
+	global lastblock
+	lastblock = lastblock.encode("ascii")
+	return (m_info, n_info, bestblockhash, get_block_time(bestblockhash), get_block_time(lastblock))
 
 def lock(account, state = None):
 	if not account: return False
