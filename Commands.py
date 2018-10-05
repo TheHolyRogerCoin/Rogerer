@@ -137,6 +137,22 @@ def parse_amount(inp, acct = False, all_offset = 0, min_amount = '1', integer_on
 def print_amount(inp):
 	return "{:,}".format(decimal.Decimal(inp)/decimal.Decimal(Transactions.roundingnum()))
 
+def print_friendlyTime(secs):
+	if secs > ((60*60)*24):
+		secs = secs/((60*60)*24)
+		timeUnit = "day"
+	elif secs > 60*60:
+		secs = secs/(60*60)
+		timeUnit = "hour"
+	elif secs > 60:
+		secs = secs/60
+		timeUnit = "min"
+	else:
+		timeUnit = "sec"
+	if secs > 1:
+		timeUnit = timeUnit+"s"
+	return "%.1f %s" % (secs, timeUnit)
+
 def is_soak_ignored(account):
 	if "soakignore" in Config.config:
 		return Config.config["soakignore"].get(account.lower(), False)
@@ -376,13 +392,8 @@ def faucet(req, arg):
 			penalty = random.randint((30*60),(2*60*60))
 			Global.faucet_list[toacct] = Global.faucet_list[toacct] + penalty
 		timerApprx = random.randint(timer,timer+(20*60))
-		difference = (Global.faucet_list[toacct] + timerApprx - curtime)/60
-		if difference > 60:
-			difference = difference/60
-			timeUnit = "hours"
-		else:
-			timeUnit = "minutes"
-		return req.reply("Sorry, no %ss around here! Try in %.1f %s." % (Config.config["coinab"], difference, timeUnit), True)
+		difference = (Global.faucet_list[toacct] + timerApprx - curtime)
+		return req.reply("Sorry, no %ss around here! Try in %s." % (Config.config["coinab"], print_friendlyTime(difference)), True)
 	acct = req.instance
 
 	amount = faucet_amount_gen()

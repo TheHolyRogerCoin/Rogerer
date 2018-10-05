@@ -1,7 +1,7 @@
 # coding=utf8
 import sys, os, subprocess, time, datetime, math, pprint, traceback, operator, random
 import Irc, Transactions, Blocknotify, Logger, Global, Hooks, Config
-from Commands import parse_amount, print_amount, validate_user, coloured_text, is_soak_ignored, soak, random_seed_gen, pot_balance
+from Commands import parse_amount, print_amount, print_friendlyTime, validate_user, coloured_text, is_soak_ignored, soak, random_seed_gen, pot_balance
 from collections import OrderedDict
 
 games = {}
@@ -63,21 +63,10 @@ def check_gamble_timer(instance, targetchannel, cmd_args, nick, source, acct, ti
 					if (net_won_7d > multiplier_winning_cap):
 						penalty = penalty*(int(net_won_7d/multiplier_winning_cap))
 			Global.gamble_list[targetchannel][acct] = lastGambleTime + penalty
-			Logger.log("c","%s received penalty of %i %s, gambletime: %i, curtime: %i, timer %i %s" % (nick, ((penalty)/(60*60) if penalty > (60*60) else (penalty)/(60) ), ("hours" if penalty > (60*60) else "minutes" ), lastGambleTime, curtime, ((timer)/(60*60) if timer > (60*60) else (timer)/(60) ), ("hours" if timer > (60*60) else "minutes" )))
+			Logger.log("c","%s received penalty of %s, gambletime: %i, curtime: %i, timer %s" % (nick, print_friendlyTime(penalty), lastGambleTime, curtime, print_friendlyTime(timer)))
 			lastGambleTime = int(Global.gamble_list[targetchannel][acct])
 		timerApprx = random.randint(timer,timer+(30))
 		difference = (lastGambleTime + timerApprx - curtime)
-		if difference > ((60*60)*24):
-			difference = difference/((60*60)*24)
-			timeUnit = "days"
-		elif difference > 60*60:
-			difference = difference/(60*60)
-			timeUnit = "hours"
-		elif difference > 60:
-			difference = difference/60
-			timeUnit = "minutes"
-		else:
-			timeUnit = "seconds"
 		if not to_admin and net_won_24h > soft_winning_cap:
 			r_str = "You've won a lot today! "
 		elif not to_admin:
@@ -85,8 +74,8 @@ def check_gamble_timer(instance, targetchannel, cmd_args, nick, source, acct, ti
 		else:
 			str_botchannel = ""
 			r_str = ""
-		Logger.log("c","%s timer vals: %s, timer: %i, lastGambleTime: %i" % (nick, timers, timer, lastGambleTime))
-		return "%s%sWait %.1f %s." % (str_botchannel, r_str, difference, timeUnit)
+		Logger.log("c","%s timer vals: %s, timer: %s, lastGambleTime: %i" % (nick, timers, print_friendlyTime(timer), lastGambleTime))
+		return "%s%sWait %s." % (str_botchannel, r_str, print_friendlyTime(difference))
 	else:
 		return False
 
