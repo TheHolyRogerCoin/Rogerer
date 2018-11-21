@@ -9,10 +9,12 @@ def daemon():
 	return theholyrogerrpc.connect_to_local()
 JSONRPCException = theholyrogerrpc.proxy.JSONRPCException
 
-cur = database().cursor()
+db = database()
+cur = db.cursor()
 cur.execute("SELECT block FROM lastblock")
 lastblock = cur.fetchone()[0]
 del cur
+db.close()
 
 class NotEnoughMoney(Exception):
 	pass
@@ -71,44 +73,67 @@ def notify_block():
 
 	cur.execute("UPDATE lastblock SET block = %s", (lb["lastblock"],))
 	db.commit()
+	db.close()
 	lastblock = lb["lastblock"]
 
-def balance(account): 
-	cur = database().cursor()
+def balance(account):
+	db = database()
+	cur = db.cursor()
 	cur.execute("SELECT balance FROM accounts WHERE account = %s", (account,))
 	if cur.rowcount:
-		return cur.fetchone()[0]
+		r = cur.fetchone()[0]
+		db.close()
+		return r
 	else:
+		db.close()
 		return 0
 
 def balance_unconfirmed(account):
 	return unconfirmed.get(account, 0)
 
-def check_exists(target): 
-	cur = database().cursor()
-	cur.execute("SELECT balance FROM accounts WHERE account = %s", (target,))
+def check_exists(target, check_alt = False):
+	if not target or target.lower() == "false" or target.lower() == "null": return False
+	db = database()
+	cur = db.cursor()
+	cur.execute("SELECT account FROM accounts WHERE lower(account) = %s", (target.lower(),))
 	if not cur.rowcount:
-		return False
-	return True
+		if check_alt:
+			cur.execute("SELECT account FROM accounts WHERE lower(alt_account) = %s", (check_alt.lower(),))
+			if not cur.rowcount:
+				db.close()
+				return False
+			r = cur.fetchone()[0]
+			db.close()
+			return r
+		else:
+			db.close()
+			return False
+	r = cur.fetchone()[0]
+	db.close()
+	return r
 
 
-def faucet_board(instance, category = 'jackpot'): 
-	cur = database().cursor()
+def faucet_board(instance, category = 'jackpot'):
+	db = database()
+	cur = db.cursor()
 	if category == 'losers':
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s ORDER BY amount ASC, timestamp DESC limit 1", (instance,))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s ORDER BY amount ASC, timestamp DESC limit 1", ("@FAUCET", instance))
 	elif category == 'topwinner':
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount < 1000 ORDER BY amount DESC, timestamp DESC limit 1", (instance,))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount < 1000 ORDER BY amount DESC, timestamp DESC limit 1", ("@FAUCET", instance))
 	elif category == 'runnerup1':
 		# cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount >= 3001 AND amount <= 5000 ORDER BY amount DESC, timestamp DESC limit 1", (instance,))
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount >= 1000 AND amount <= 2000 ORDER BY timestamp DESC limit 1", (instance,))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount >= 1000 AND amount <= 2000 ORDER BY timestamp DESC limit 1", ("@FAUCET", instance))
 	elif category == 'jackpot':
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount >= 6000 ORDER BY timestamp DESC limit 1", (instance,))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount >= 6000 ORDER BY timestamp DESC limit 1", ("@FAUCET", instance))
 	if cur.rowcount:
-		return cur.fetchone()
+		r = cur.fetchone()
+		db.close()
+		return r
 	else:
+		db.close()
 		return False
 
-def tip(token, source, target, amount): 
+def tip(token, source, target, amount, tip_source = None):
 	db = database()
 	cur = db.cursor()
 	cur.execute("SELECT * FROM accounts WHERE account = ANY(%s) FOR UPDATE", (sorted([target, source]),))
@@ -121,10 +146,11 @@ def tip(token, source, target, amount):
 	cur.execute("UPDATE accounts SET balance = balance + %s WHERE account = %s", (amount, target)) 
 	if not cur.rowcount:
 		cur.execute("INSERT INTO accounts VALUES (%s, %s)", (target, amount))
-	txlog(cur, token, amount, src = source, dest = target)
+	txlog(cur, token, amount, src = source, dest = target, address = tip_source)
 	db.commit()
+	db.close()
 
-def tip_multiple(token, source, dict):
+def tip_multiple(token, source, dict, tip_source = None):
 	db = database()
 	cur = db.cursor()
 	cur.execute("SELECT * FROM accounts WHERE account = ANY(%s) FOR UPDATE", (sorted(dict.keys() + [source]),))
@@ -142,10 +168,11 @@ def tip_multiple(token, source, dict):
 		if not cur.rowcount:
 			cur.execute("INSERT INTO accounts VALUES (%s, %s)", (target, amount))
 	for target in dict:
-		txlog(cur, token, dict[target], src = source, dest = target)
+		txlog(cur, token, dict[target], src = source, dest = target, address = tip_source)
 	db.commit()
+	db.close()
 
-def withdraw(token, account, address, amount): 
+def withdraw(token, account, address, amount):
 	db = database()
 	cur = db.cursor()
 	try:
@@ -178,9 +205,10 @@ def withdraw(token, account, address, amount):
 	db.commit()
 	txlog(cur, token, amount + Config.config["txfee"], tx = tx.encode("ascii"), address = address, src = account)
 	db.commit()
+	db.close()
 	return tx.encode("ascii")
 
-def deposit_address(account): 
+def deposit_address(account):
 	db = database()
 	cur = db.cursor()
 	cur.execute("SELECT address FROM address_account WHERE used = '0' AND account = %s LIMIT 1", (account,))
@@ -195,6 +223,7 @@ def deposit_address(account):
 		db.commit()
 	except:
 		pass
+	db.close()
 	return addr.encode("ascii")
 
 def verify_address(address):
@@ -207,11 +236,13 @@ def ping():
 	daemon().getbalance()
 
 def balances():
-	cur = database().cursor()
+	db = database()
+	cur = db.cursor()
 	cur.execute("SELECT SUM(balance) FROM accounts")
-	db = float(cur.fetchone()[0])
+	balances = float(cur.fetchone()[0])
 	theholyrogerd = float(daemon().getbalance(minconf = Config.config["confirmations"]))
-	return (db, theholyrogerd)
+	db.close()
+	return (balances, theholyrogerd)
 
 def get_info():
 	info = daemon().getinfo()
@@ -230,9 +261,12 @@ def get_all_info():
 	return (m_info, n_info, bestblockhash)
 
 def lock(account, state = None):
+	if not account: return False
 	if state == None:
-		cur = database().cursor()
+		db = database()
+		cur = db.cursor()
 		cur.execute("SELECT * FROM locked WHERE account = %s", (account,))
+		db.close()
 		return not not cur.rowcount
 	elif state == True:
 		db = database()
@@ -240,6 +274,7 @@ def lock(account, state = None):
 		try:
 			cur.execute("INSERT INTO locked VALUES (%s)", (account,))
 			db.commit()
+			db.close()
 		except psycopg2.IntegrityError as e:
 			pass
 	elif state == False:
@@ -247,3 +282,4 @@ def lock(account, state = None):
 		cur = db.cursor()
 		cur.execute("DELETE FROM locked WHERE account = %s", (account,))
 		db.commit()
+		db.close()

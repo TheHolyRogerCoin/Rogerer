@@ -8,3 +8,5 @@ for instance in Config.config["instances"]:
 Global.manager_queue.put(("Signal",))
 Irc.manager()
 Logger.log("me", "Manager returned")
+Logger.log("me", "Threads: %s" % (threading.enumerate()))
+Logger.log("me", "Queue: %s" % (Global.manager_queue.queue))

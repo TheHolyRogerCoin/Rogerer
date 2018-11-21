@@ -1,7 +1,7 @@
 # coding=utf8
-import traceback, sys, re, time, threading, Queue, socket, subprocess
+import traceback, sys, re, time, datetime, pytz, threading, Queue, socket, subprocess
 
-import Irc, Config, Transactions, Commands, Config, Global, Logger
+import Irc, Config, Transactions, Commands, Games, Config, Global, Logger, Expire
 
 hooks = {}
 
@@ -17,13 +17,14 @@ def ping(instance, source, *args):
 hooks["PING"] = ping
 
 class Request(object):
-	def __init__(self, instance, target, source, altnick, text):
+	def __init__(self, instance, target, source, altnick, text, cmd):
 		self.instance = instance
 		self.target = target
 		self.source = source
 		self.nick = Irc.get_nickname(source, text)
 		self.altnick = altnick
 		self.text = text
+		self.cmdalias = cmd
 
 	def privmsg(self, targ, text, priority = None):
 		Logger.log("c", self.instance + ": %s <- (pri=%s) %s " % (targ, str(priority),  text))
@@ -32,6 +33,14 @@ class Request(object):
 				Irc.instance_send(self.instance, ("PRIVMSG", targ, text[i:i+350]), priority = priority)
 			else:
 				Irc.instance_send(self.instance, ("PRIVMSG", targ, text[i:i+350]))
+
+	def noticemsg(self, targ, text, priority = None):
+		Logger.log("c", self.instance + " (NOTICE): %s <- (pri=%s) %s " % (targ, str(priority),  text))
+		for i in xrange(0, len(text), 350):
+			if priority:
+				Irc.instance_send(self.instance, ("NOTICE", targ, text[i:i+350]), priority = priority)
+			else:
+				Irc.instance_send(self.instance, ("NOTICE", targ, text[i:i+350]))
 
 	def reply(self, text, altnick = False):
 		if self.nick == self.target:
@@ -43,6 +52,9 @@ class Request(object):
 
 	def reply_private(self, text):
 		self.privmsg(self.nick, self.nick + ": " + text, priority = 10)
+
+	def notice_private(self, text):
+		self.noticemsg(self.nick, self.nick + ": " + text, priority = 10)
 
 	def say(self, text):
 		if self.nick == self.target:
@@ -91,6 +103,7 @@ def run_command(cmd, req, arg):
 
 def message(instance, source, target, text):
 	host = Irc.get_host(source)
+	text = Irc.strip_colours(text)
 	if text == "\x01VERSION\x01":
 		p = subprocess.Popen(["git", "rev-parse", "HEAD"], stdout = subprocess.PIPE)
 		hash, _ = p.communicate()
@@ -109,8 +122,26 @@ def message(instance, source, target, text):
 		nick = Irc.get_nickname(source, text)
 		if target == instance:
 			commandline = text
-		if text[0] == Config.config["prefix"]:
+		if len(text) > 1 and text[0] == Config.config["prefix"]:
 			commandline = text[1:]
+		elif (target != instance or Irc.is_super_admin(source)) and len(Global.response_read_timers) > 0 and nick in Global.response_read_timers or ("@roger_that" in Global.response_read_timers and (target in Config.config["welcome_channels"] or Irc.is_super_admin(source))):
+			if nick not in Global.response_read_timers and "@roger_that" in Global.response_read_timers:
+				theReadTimer = "@roger_that"
+				auto_or_text = text
+				time_multiplier = (60*60)
+			else:
+				theReadTimer = nick
+				auto_or_text = "auto"
+				time_multiplier = (60)
+			t = time.time()
+			if Global.response_read_timers[theReadTimer]["time"] + 40 > t:
+				commandline = "%s %s" % (Global.response_read_timers[theReadTimer]["cmd"], text)
+			elif Global.response_read_timers[theReadTimer]["time"] + (10*time_multiplier) > t:
+				commandline = "%s %s" % (Global.response_read_timers[theReadTimer]["cmd"], auto_or_text)
+				Logger.log("c", "%s: timer expired (auto) for: %s on: %s, cmd: %s" % (instance, nick, theReadTimer, Global.response_read_timers[theReadTimer]["cmd"]))
+			else:
+				commandline = "%s end-game" % (Global.response_read_timers[theReadTimer]["cmd"])
+				Logger.log("c", "%s: timer expired (ended) for: %s on: %s, cmd: %s" % (instance, nick, theReadTimer, Global.response_read_timers[theReadTimer]["cmd"]))
 		# Track & update last time user talked in channel (ignore PM to bot for activity purposes)
 		if target.startswith('#'):
 			with Global.active_lock:
@@ -118,7 +149,7 @@ def message(instance, source, target, text):
 					Global.active_list[target] = {}
 				Global.active_list[target][nick] = time.time()
 		if commandline:
-			if Irc.is_ignored(host):
+			if Irc.is_ignored(host) and not Irc.is_super_admin(source):
 				Logger.log("c", instance + ": %s <%s ignored> %s " % (target, nick, text))
 				return
 			Logger.log("c", instance + ": %s <%s> %s " % (target, nick, text))
@@ -146,56 +177,133 @@ def message(instance, source, target, text):
 				args = [a for a in args.split(" ") if len(a) > 0]
 			if command[0] != '_':
 				cmd = Commands.commands.get(command.lower(), None)
+				if cmd == None:
+					cmd = Games.games.get(command.lower(), None)
 				if not cmd.__doc__ or cmd.__doc__.find("admin") == -1 or Irc.is_admin(source):
 					if cmd:
-						req = Request(instance, reply, source, altnick, commandline)
+						req = Request(instance, reply, source, altnick, commandline, command.lower())
 						t = threading.Thread(target = run_command, args = (cmd, req, args))
 						t.start()
 hooks["PRIVMSG"] = message
 
+def date_timestamp(date):
+    dt = datetime.datetime.strptime(date, "%b %d %H:%M:%S %Y").replace(tzinfo = pytz.utc)
+    epoch = datetime.datetime(1970, 1, 1, tzinfo=pytz.utc)
+    return (dt - epoch).total_seconds()
+
+def notice(instance, source, target, text):
+	if "@" in source and Irc.get_host(source) == "services." and Irc.get_nickname(source, "") == "NickServ":
+		m = re.match("Information on (\\S*) \\(account (\\S*)\\):", text)
+		if m:
+			Global.svsdata = {"nick": m.group(1), "account": m.group(2)}
+			return
+		m = re.match("(\\S*) is not registered\\.", text)
+		if m:
+			Global.svsdata = None
+			Expire.svsdata({"nick": m.group(1)})
+			return
+		if Global.svsdata != None:
+			m = re.match("Registered : ([^(]*) \\([^)]* ago\\)", text)
+			if m:
+				Global.svsdata["reg"] = int(date_timestamp(m.group(1)))
+				return
+			m = re.match("User Reg\\.  : ([^(]*) \\([^)]* ago\\)", text)
+			if m:
+				Global.svsdata["userreg"] = int(date_timestamp(m.group(1)))
+				return
+			m = re.match("Last seen  : ([^(]*) \\([^)]* ago\\)", text)
+			if m:
+				Global.svsdata["last"] = int(date_timestamp(m.group(1)))
+				return
+			m = re.match("Last seen  : now", text)
+			if m:
+				Global.svsdata["last"] = int(time.time())
+				return
+			m = re.match("Last seen  : \\(about (\\d*) weeks ago\\)", text)
+			if m:
+				Global.svsdata["lastweeks"] = int(m.group(1))
+				return
+			m = re.match("User seen  : ([^(]*) \\([^)]* ago\\)", text)
+			if m:
+				Global.svsdata["userlast"] = int(date_timestamp(m.group(1)))
+				return
+			m = re.match("User seen  : now", text)
+			if m:
+				Global.svsdata["userlast"] = int(time.time())
+				return
+			m = re.match("User seen  : \\(about (\\d*) weeks ago\\)", text)
+			if m:
+				Global.svsdata["userlastweeks"] = int(m.group(1))
+				return
+			m = re.match("\\*\\*\\* End of Info \\*\\*\\*", text)
+			if m:
+				Expire.svsdata(Global.svsdata)
+				Global.svsdata = None
+				return
+hooks["NOTICE"] = notice
+
 def join(instance, source, channel, account, _):
+	curtime = time.time()
 	if account == "*":
 		account = False
 	nick = Irc.get_nickname(source, "")
-	# acct = Irc.account_names([nick])[0]
 	with Global.account_lock:
 		if nick  == instance:
 			Global.account_cache[channel] = {}
-		# elif channel in Config.config["welcome_channels"] and not acct and not Transactions.check_exists(nick):
-		# elif channel in Config.config["welcome_channels"] and not Transactions.check_exists(nick):
-		# 	Irc.instance_send(instance, ("PRIVMSG", channel, "Welcome our newest Rogeteer - %s!") % (nick))
 		Global.account_cache[channel][nick] = account	
 		for channel in Global.account_cache:
 			if nick in Global.account_cache[channel]:
+				if channel in Config.config["welcome_channels"] and (not account or not Transactions.check_exists(account)) and not Transactions.check_exists(nick) and (nick not in Global.welcome_list or Global.welcome_list[nick] + (60*10) < curtime):
+					Global.welcome_list[nick] = curtime
+					# Irc.instance_send(instance, ("PRIVMSG", channel, "Welcome our newest Rogeteer - %s! Try &help, &rogerme and &faucet to get started!" % (nick)), priority = 20, lock = False)
+					Irc.instance_send(instance, ("PRIVMSG", channel, "Welcome our newest Rogeteer - %s! Try &help, &rogerme and &faucet to get started!" % (nick)), priority = 20, lock = False)
+				elif channel in Config.config["welcome_channels"] and account and (Transactions.check_exists(nick) or Transactions.check_exists(account)) and (nick not in Global.welcome_list or Global.welcome_list[nick] + (60*10) < curtime):
+					Global.welcome_list[nick] = curtime
+					welcome_str = str(Commands.random_line('quotes_welcome'))
+					Irc.instance_send(instance, ("NOTICE", nick, "Welcome back %s! %s" % (nick, welcome_str)), priority = 20, lock = False)
 				Global.account_cache[channel][nick] = account
 				Logger.log("w", "Propagating %s=%s into %s" % (nick, account, channel))
+	if account != False:
+		Expire.bump_last(account)
 hooks["JOIN"] = join
 
 def part(instance, source, channel, *_):
 	nick = Irc.get_nickname(source, "")
+	account = None
 	with Global.account_lock:
 		if nick == instance:
 			del Global.account_cache[channel]
 			Logger.log("w", "Removing cache for " + channel)
 			return
 		if nick in Global.account_cache[channel]:
+			account = Global.account_cache[channel][nick]
+		if nick in Global.account_cache[channel]:
 			del Global.account_cache[channel][nick]
 			Logger.log("w", "Removing %s from %s" % (nick, channel))
+	if account != None and account != False:
+		Expire.bump_last(account)
 hooks["PART"] = part
 
 def kick(instance, _, channel, nick, *__):
+	account = None
 	with Global.account_lock:
 		if nick == instance:
 			del Global.account_cache[channel]
 			Logger.log("w", "Removing cache for " + channel)
 			return
 		if nick in Global.account_cache[channel]:
+			account = Global.account_cache[channel][nick]
+		if nick in Global.account_cache[channel]:
 			del Global.account_cache[channel][nick]
 			Logger.log("w", "Removing %s from %s" % (nick, channel))
+	if account != None and account != False:
+		Expire.bump_last(account)
 hooks["KICK"] = kick
 
 def quit(instance, source, _):
+	curtime = time.time()
 	nick = Irc.get_nickname(source, "")
+	account = None
 	with Global.account_lock:
 		if nick == instance:
 			chans = []
@@ -208,29 +316,54 @@ def quit(instance, source, _):
 			return
 		for channel in Global.account_cache:
 			if nick in Global.account_cache[channel]:
+				account = Global.account_cache[channel][nick]
+				if account != None:
+					break
+		for channel in Global.account_cache:
+			if nick in Global.account_cache[channel] and ((channel in Global.active_list and (nick in Global.active_list[channel] and (curtime - Global.active_list[channel][nick]) > 86400)) or channel not in Global.active_list or nick not in Global.active_list[channel]):
 				del Global.account_cache[channel][nick]
 				Logger.log("w", "Removing %s from %s" % (nick, channel))
+	if account != None and account != False:
+		Expire.bump_last(account)
 hooks["QUIT"] = quit
 
 def account(instance, source, account):
+	curtime = time.time()
 	if account == "*":
 		account = False
 	nick = Irc.get_nickname(source, "")
 	with Global.account_lock:
 		for channel in Global.account_cache:
 			if nick in Global.account_cache[channel]:
+				if channel in Config.config["welcome_channels"] and not account and not Transactions.check_exists(nick) and (nick not in Global.welcome_list or Global.welcome_list[nick] + (60*10) < curtime):
+					Global.welcome_list[nick] = curtime
+					Irc.instance_send(instance, ("PRIVMSG", channel, "Welcome our newest Rogeteer - %s! Try &help, &rogerme and &faucet to get started!" % (nick)), priority = 20, lock = False)
+				elif channel in Config.config["welcome_channels"] and account and Transactions.check_exists(nick) and (nick not in Global.welcome_list or Global.welcome_list[nick] + (60*10) < curtime):
+					Global.welcome_list[nick] = curtime
+					welcome_str = str(Commands.random_line('quotes_welcome'))
+					Irc.instance_send(instance, ("NOTICE", nick, "Welcome back %s! %s" % (nick, welcome_str)), priority = 20, lock = False)
 				Global.account_cache[channel][nick] = account
 				Logger.log("w", "Propagating %s=%s into %s" % (nick, account, channel))
+	if account != None and account != False:
+		Expire.bump_last(account)
 hooks["ACCOUNT"] = account
 
 def _nick(instance, source, newnick):
 	nick = Irc.get_nickname(source, "")
+	account = None
 	with Global.account_lock:
+		for channel in Global.account_cache:
+			if nick in Global.account_cache[channel]:
+				account = Global.account_cache[channel][nick]
+				if account != None:
+					break
 		for channel in Global.account_cache:
 			if nick in Global.account_cache[channel]:
 				Global.account_cache[channel][newnick] = Global.account_cache[channel][nick]
 				Logger.log("w", "%s -> %s in %s" % (nick, newnick, channel))
 				del Global.account_cache[channel][nick]
+	if account != None and account != False:
+		Expire.bump_last(account)
 hooks["NICK"] = _nick
 
 def names(instance, _, __, eq, channel, names):

@@ -4,6 +4,9 @@ active_list = {}
 active_lock = threading.Lock()
 
 faucet_list = {}
+gamble_list = {}
+response_read_timers = {}
+welcome_list = {}
 
 instances = {}
 
@@ -18,3 +21,6 @@ manager_queue = Queue.Queue()
 
 acctnick_list = {}
 nicks_last_shown = {}
+
+svsdata = None
+svsevent = None

@@ -57,7 +57,12 @@ def ignore(host, duration):
 	Global.ignores[host] = time.time() + duration
 
 def is_admin(hostmask):
+	if hostmask == "@SIGHUP": return True
 	return Config.config["admins"].get(get_host(hostmask), False)
+
+def is_super_admin(hostmask):
+	if hostmask == "@SIGHUP": return True
+	return Config.config["superadmins"].get(get_host(hostmask), False)
 
 def account_names(nicks):
 	for i in range(len(nicks)):
@@ -145,6 +150,7 @@ class Instance(object):
 		self.reader_dead = threading.Event()
 		self.writer_dying = threading.Event()
 		self.writer_dead = threading.Event()
+		self.expirer_dead = threading.Event()
 		self.error_lock = threading.Lock()
 
 def reader_thread(instance, sock):
@@ -286,6 +292,7 @@ def connect_instance(instance):
 	Global.instances[instance].reader_dead.clear()
 	Global.instances[instance].writer_dying.clear()
 	Global.instances[instance].writer_dead.clear()
+	Global.instances[instance].expirer_dead.clear()
 	Global.instances[instance].lastsend = time.time()
 	writer.start()
 	reader.start()
@@ -298,7 +305,7 @@ def on_SIGHUP(signum, frame):
 	cmd = Commands.commands.get("admin")
 	if cmd and Config.config.get("irclog"):
 		Logger.irclog("Received SIGHUP, reloading Config")
-		req = Hooks.Request(Config.config["irclog"][0], Config.config["irclog"][1], "@SIGHUP", "@SIGHUP", "SIGHUP")
+		req = Hooks.Request(Config.config["irclog"][0], Config.config["irclog"][1], "@SIGHUP", "@SIGHUP", "SIGHUP", "admin")
 		Hooks.run_command(cmd, req, ["reload", "Config"])
 
 def manager():
@@ -318,10 +325,13 @@ def manager():
 				Global.instances[cmd[1]].can_send.clear()
 				Global.instances[cmd[1]].reader_dying.set()
 				Global.instances[cmd[1]].writer_dying.set()
-				Logger.log("m", "Waiting for reader")
+				Logger.log("m", "Waiting for reader...")
 				Global.instances[cmd[1]].reader_dead.wait()
-				Logger.log("m", "Waiting for writer")
+				Logger.log("m", "Waiting for writer...")
 				Global.instances[cmd[1]].writer_dead.wait()
+				Global.svsevent.set()
+				Logger.log("m", "Waiting for expirer...")
+				Global.instances[cmd[1]].expirer_dead.wait()
 				Logger.log("m", "Emptying send queue")
 				Global.instances[cmd[1]].error_lock.acquire(False)
 				Global.instances[cmd[1]].error_lock.release()
