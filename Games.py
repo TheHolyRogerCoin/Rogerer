@@ -1,15 +1,20 @@
 # coding=utf8
 import sys, os, subprocess, time, datetime, math, pprint, traceback, operator, random
 import Irc, Transactions, Blocknotify, Logger, Global, Hooks, Config
-from Commands import parse_amount, validate_user, coloured_text, is_soak_ignored
+from Commands import parse_amount, print_amount, validate_user, coloured_text, is_soak_ignored, soak, random_seed_gen, pot_balance
 from collections import OrderedDict
 
 games = {}
 
-def check_gamble_timer(targetchannel, cmd_args, nick, source, acct, curtime, timer_min = 5, timer_max = 15, penalty_min = 10, penalty_max = 20, to_admin = False):
-	if targetchannel not in Global.gamble_list:
+def check_gamble_timer(instance, targetchannel, cmd_args, nick, source, acct, timers = { "timer_min": 5, "timer_max": 15, "penalty_min": 10, "penalty_max": 20 }, to_admin = False, allowed_anywhere = False):
+	curtime = time.time()
+	timer_min = timers["timer_min"]
+	timer_max = timers["timer_max"]
+	penalty_min = timers["penalty_min"]
+	penalty_max = timers["penalty_max"]
+	if (targetchannel not in Global.gamble_list) or (acct not in Global.gamble_list[targetchannel]):
 		return False
-	if targetchannel not in Config.config["botchannels"]:
+	if targetchannel not in Config.config["botchannels"] and not allowed_anywhere:
 		timer_min = 60*timer_min
 		timer_max = 60*timer_max
 		penalty_min = 90*penalty_min
@@ -19,29 +24,68 @@ def check_gamble_timer(targetchannel, cmd_args, nick, source, acct, curtime, tim
 	else:
 		str_botchannel = ""
 		is_admin = Irc.is_admin(source)
-	if is_admin or acct not in Global.gamble_list[targetchannel] or Irc.is_super_admin(source):
+	timer = random.randint((timer_min),(timer_max))
+	lastGambleTime = int(Global.gamble_list[targetchannel][acct])
+	Logger.log("c","%s lastGambleTime at %i" % (nick, lastGambleTime))
+
+	if not to_admin:
+		game_ident = ['@POKER%', '@BLACKJACK%', '@ROUL%', '@LOTTO%']
+		interval = "24 hours"
+		spent_24h = Transactions.get_game_stats(instance, mode = "in-sum", game_ident = game_ident, acct = acct, interval = interval, count = False)
+		won_24h = Transactions.get_game_stats(instance, mode = "out-sum", game_ident = game_ident, acct = acct, interval = interval, count = False)
+		net_won_24h = (int(won_24h) - int(spent_24h))
+		Logger.log("c","Game stats @ %s: Nick: %s Total Spent: %i, Total Won: %i, Net Won: %i" % (interval, nick, spent_24h, won_24h, net_won_24h))
+		interval = "7 days"
+		spent_7d = Transactions.get_game_stats(instance, mode = "in-sum", game_ident = game_ident, acct = acct, interval = interval, count = False)
+		won_7d = Transactions.get_game_stats(instance, mode = "out-sum", game_ident = game_ident, acct = acct, interval = interval, count = False)
+		net_won_7d = (int(won_7d) - int(spent_7d))
+		Logger.log("c","Game stats @ %s: Nick: %s Total Spent: %i, Total Won: %i, Net Won: %i" % (interval, nick, spent_7d, won_7d, net_won_7d))
+		soft_winning_cap = parse_amount(Config.config["gamble_params"]["soft_winning_cap"])
+		hard_winning_cap = parse_amount(Config.config["gamble_params"]["hard_winning_cap"])
+		multiplier_winning_cap = parse_amount(Config.config["gamble_params"]["multiplier_winning_cap"])
+		if (net_won_24h > soft_winning_cap):
+			if (net_won_24h > hard_winning_cap):
+				new_timer = timer+(60*60*3)
+			else:
+				new_timer = timer+(60*60*1)
+			if lastGambleTime < curtime + new_timer:
+				timer = new_timer
+				Logger.log("c","Game stats @ %s: Nick: %s Total Spent: %i, Total Won: %i, Net Won: %i" % (interval, nick, spent_24h, won_24h, net_won_24h))
+	if (not Config.config["gamble_params"]["force_timer"]) and (is_admin or acct not in Global.gamble_list[targetchannel] or Irc.is_super_admin(source)):
 		return False
 	if len(cmd_args) > 0 and nick in Global.response_read_timers:
 		timer = 0
-	else:
-		timer = random.randint((timer_min),(timer_max))
-	lastGambleTime = Global.gamble_list[targetchannel][acct]
 	if lastGambleTime + timer > curtime:
 		if lastGambleTime + timer > curtime + (timer_min/3) and lastGambleTime + timer < curtime + (40*24*60*60):
 			penalty = random.randint((penalty_min),(penalty_max))
+			if not to_admin and (net_won_7d > hard_winning_cap):
+					penalty = penalty*4
+					if (net_won_7d > multiplier_winning_cap):
+						penalty = penalty*(int(net_won_7d/multiplier_winning_cap))
 			Global.gamble_list[targetchannel][acct] = lastGambleTime + penalty
+			Logger.log("c","%s received penalty of %i %s, gambletime: %i, curtime: %i, timer %i %s" % (nick, ((penalty)/(60*60) if penalty > (60*60) else (penalty)/(60) ), ("hours" if penalty > (60*60) else "minutes" ), lastGambleTime, curtime, ((timer)/(60*60) if timer > (60*60) else (timer)/(60) ), ("hours" if timer > (60*60) else "minutes" )))
+			lastGambleTime = int(Global.gamble_list[targetchannel][acct])
 		timerApprx = random.randint(timer,timer+(30))
-		difference = (lastGambleTime + timerApprx - curtime)/60
-		if difference > 60:
-			difference = difference/60
+		difference = (lastGambleTime + timerApprx - curtime)
+		if difference > ((60*60)*24):
+			difference = difference/((60*60)*24)
+			timeUnit = "days"
+		elif difference > 60*60:
+			difference = difference/(60*60)
 			timeUnit = "hours"
-		else:
+		elif difference > 60:
+			difference = difference/60
 			timeUnit = "minutes"
-		if not to_admin:
+		else:
+			timeUnit = "seconds"
+		if not to_admin and net_won_24h > soft_winning_cap:
+			r_str = "You've won a lot today! "
+		elif not to_admin:
 			r_str = "Roger safely - begambleaware.org. "
 		else:
 			str_botchannel = ""
 			r_str = ""
+		Logger.log("c","%s timer vals: %s, timer: %i, lastGambleTime: %i" % (nick, timers, timer, lastGambleTime))
 		return "%s%sWait %.1f %s." % (str_botchannel, r_str, difference, timeUnit)
 	else:
 		return False
@@ -82,13 +126,15 @@ def roger_that(req, arg):
 	acct = req.instance
 	host = Irc.get_host(req.source)
 	curtime = time.time()
-	amount = 69
-	random.seed(curtime*1000)
-	user_valid, toacct = validate_user(toacct, host = host, nick = req.nick, altnick = req.altnick, allow_discord_nicks = True, hostlist = Global.gamble_list)
+	amount = parse_amount(69)
+	random.seed(random_seed_gen())
+	if "@HOSTS" not in Global.gamble_list: Global.gamble_list["@HOSTS"] = {}
+	user_valid, toacct = validate_user(toacct, host = host, nick = req.nick, altnick = req.altnick, allow_discord_nicks = True, hostlist = Global.gamble_list["@HOSTS"])
 	if user_valid != True:
 		if "Quiet" == user_valid: return
 		return req.notice_private(user_valid)
-	if req.target == req.nick and not Irc.is_admin(req.source):
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
+	if (req.target == req.nick or req.target not in Config.config["instances"][req.instance]) and not Irc.is_super_admin(req.source):
 		return req.reply("Can't roger that in private!")
 	if is_soak_ignored(toacct):
 		return req.notice_private("You cannot participate in ROGER THAT")
@@ -97,12 +143,13 @@ def roger_that(req, arg):
 		if len(arg) > 1:
 			try:
 				amount = parse_amount(arg[1])
-				if amount > 69: amount = 69
+				if amount > parse_amount(69): amount = parse_amount(69)
 			except ValueError as e:
 				return req.notice_private(str(e))
 		if "@roger_that" not in Global.gamble_list or Irc.is_super_admin(req.source):
 			for welcome_channel in Config.config["welcome_channels"]:
-				rt_timer = check_gamble_timer(targetchannel = welcome_channel, cmd_args = [], nick = False, source = req.source, acct = acct, curtime = curtime, timer_min = 4, timer_max = 8, penalty_min = 5, penalty_max = 15, to_admin = True)
+				timer_vals = { "timer_min": 4, "timer_max": 8, "penalty_min": 5, "penalty_max": 15 }
+				rt_timer = check_gamble_timer(instance = req.instance, targetchannel = welcome_channel, cmd_args = [], nick = False, source = req.source, acct = acct, timers = timer_vals, to_admin = True)
 				if rt_timer: return req.reply(rt_timer)
 				Global.gamble_list["@roger_that"] = amount
 				add_gamble_timer(welcome_channel, acct, curtime)
@@ -126,14 +173,14 @@ def roger_that(req, arg):
 		Global.gamble_list["@roger_that_prevwin"] = toacct
 		Global.gamble_list.pop("@roger_that")
 		if "@roger_that" in Global.response_read_timers: Global.response_read_timers.pop("@roger_that")
-		Global.gamble_list[host] = toacct
+		Global.gamble_list["@HOSTS"][host] = toacct
 		Transactions.tip(token, acct, toacct, amount, tip_source = "@ROGER_THAT")
-		won_string = "%s %i %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), amount, coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
+		won_string = "%s %s %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), print_amount(amount), coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
 		if arg[0] == "end-game":
 			reply_str = "No one ROGER'd in time so %s claimed it! %s" % (req.altnick, won_string)
 		else:
 			reply_str = "%s ROGER'd first! %s!" % (req.altnick, won_string)
-		req.say("%s (@Pot = %i)" % (reply_str, Transactions.balance(req.instance)))
+		req.say("%s%s" % (reply_str, pot_balance(req.instance)))
 	except Transactions.NotEnoughMoney:
 		return req.notice_private("We're all out of %s!!" % (Config.config["coinab"]))
 
@@ -143,67 +190,70 @@ def lotto(req, arg):
 		return req.reply(gethelp("lotto"))
 	acct = Irc.account_names([req.nick])[0]
 	host = Irc.get_host(req.source)
-	minbet = 30
+	minbet = parse_amount(Config.config["gamble_params"]["@lotto"]["minbet"], min_amount='.0005')
 	chances = 1
 	curtime = time.time()
-	random.seed(curtime*1000)
+	random.seed(random_seed_gen())
 	if "@Gamble_buildup" not in Global.gamble_list:
 		Global.gamble_list["@Gamble_buildup"] = 0
-	if host in Global.gamble_list and Global.gamble_list[host] != acct and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
-		Transactions.lock(acct, True)
-	user_valid = validate_user(acct)
+	if "@HOSTS" not in Global.gamble_list: Global.gamble_list["@HOSTS"] = {}
+	user_valid = validate_user(acct, host = host, nick = req.nick, hostlist = Global.gamble_list["@HOSTS"])
 	if user_valid != True: return req.notice_private(user_valid)
-	if req.target == req.nick and not Irc.is_admin(req.source):
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
+	if (req.target == req.nick or req.target not in Config.config["instances"][req.instance]) and not Irc.is_super_admin(req.source):
 		return req.reply("Can't lotto in private!")
-	gamble_timer_reply = check_gamble_timer(targetchannel = req.target, cmd_args = arg, nick = req.nick, source = req.source, acct = acct, curtime = curtime, timer_min = 30, timer_max = 60, penalty_min = 20, penalty_max = 2*60)
+	timer_vals = Config.config["gamble_params"]["@lotto"]["timers"]
+	gamble_timer_reply = check_gamble_timer(instance = req.instance, targetchannel = req.target, cmd_args = arg, nick = req.nick, source = req.source, acct = acct, timers = timer_vals, allowed_anywhere = True)
 	if gamble_timer_reply: return req.reply(gamble_timer_reply)
 	toacct = req.instance
 	try:
-		amount = parse_amount(arg[0], acct)
+		amount = parse_amount(arg[0], acct, min_amount='.0005')
 	except ValueError as e:
 		return req.notice_private(str(e))
 	if len(arg) < 2:
 		luckynumber = 69
 	else:
-		luckynumber = arg[1]
+		luckynumber = int(arg[1])
 	if amount < minbet:
-		return req.reply("Don't be so cheap! %s %s minimum!" % (minbet, Config.config["coinab"]), True)
+		return req.reply("Don't be so cheap! %s %s minimum!" % (print_amount(minbet), Config.config["coinab"]), True)
 	elif amount > (minbet * 5):
-		chances = int(chances + (amount/100))
+		chances = int(chances + (amount/parse_amount('100')))
 	if "@Gamble_buildup" in Global.gamble_list:
-		if Global.gamble_list["@Gamble_buildup"] > 3000:
+		if Global.gamble_list["@Gamble_buildup"] > parse_amount('3000'):
 			multiplier = 2
 		else:
 			multiplier = 1
 		Global.gamble_list["@Gamble_buildup"] = Global.gamble_list["@Gamble_buildup"] + amount
-		chances = int(chances + (Global.gamble_list["@Gamble_buildup"]/(200/multiplier)))
+		chances = int(chances + (Global.gamble_list["@Gamble_buildup"]/(parse_amount('200')/multiplier)))
 	lotto=[]
 	for i in range (chances):
 		lotto.append(random.randint(1,100))
 	token = Logger.token()
+	Logger.log("c","Lotto triggered, Chances: %i" % (chances))
 	try:
-		Transactions.tip(token, acct, toacct, amount, tip_source = "@LOTTO")
+		Transactions.tip(token, acct, toacct, amount, tip_source = "@LOTTO_START")
 		add_gamble_timer(targetchannel = req.target, acct = acct, curtime = curtime)
-		Global.gamble_list[host] = acct
+		Global.gamble_list["@HOSTS"][host] = acct
 		if luckynumber in lotto: # or (Irc.is_admin(req.source) and luckynumber == random.randint(68,70)):
 			if Transactions.balance(toacct) < parse_amount("goldenshower",toacct):
 				return req.reply("We're all out of %s!!" % (Config.config["coinab"]), True)
 			Global.gamble_list["@Gamble_buildup"] = 0
-			won_string = "%s %i %s" % (coloured_text(text = "WON a golden shower", colour = "03", channel = req.target), amount, coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
-			req.say("%s played %i %s (%i%% chance) and %s! Be moist and rejoice! %s (@Pot = %i)" % (req.nick, amount, Config.config["coinab"], chances, coloured_text(text = "WON a golden shower", colour = "03", channel = req.target), coloured_text(text = "Splashback!", colour = "03", channel = req.target), Transactions.balance(req.instance)))
+			won_string = "%s %s %s" % (coloured_text(text = "WON a golden shower", colour = "03", channel = req.target), print_amount(amount), coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
+			req.say("%s played %s %s (%i%% chance) and %s! Be moist and rejoice! %s%s" % (req.nick, print_amount(amount), Config.config["coinab"], chances, coloured_text(text = "WON a golden shower", colour = "03", channel = req.target), coloured_text(text = "Splashback!", colour = "03", channel = req.target), pot_balance(req.instance)))
 			try:
-				Transactions.tip(token, toacct, acct, parse_amount("goldenshower",toacct), tip_source = "@LOTTO") # accts swapped
+				Transactions.tip(token, toacct, acct, parse_amount("goldenshower",toacct), tip_source = "@LOTTO_WIN") # accts swapped
 			except Transactions.NotEnoughMoney:
 				return req.notice_private("%s Bot ran out of winnings!" % (reply))
 			soak(req, ["splashback", "1440"], from_instance = True)
 		else:
-			req.say("%s played %i %s but %s [%s]" % (req.nick, amount, Config.config["coinab"], coloured_text(text = "left everyone dry :(", colour = "04", channel = req.target), token))
+			req.say("%s played %s %s but %s [%s]" % (req.nick, print_amount(amount), Config.config["coinab"], coloured_text(text = "left everyone dry :(", colour = "04", channel = req.target), token))
 		return
 	except Transactions.NotEnoughMoney:
-		req.notice_private("You tried to play %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+		req.notice_private("You tried to play %s %s but you only have %s %s" % (print_amount(amount), Config.config["coinab"], print_amount(Transactions.balance(acct)), Config.config["coinab"]))
 		return
 
 def cards_decks(amt_decks = 1, split_deck = False):
+	random.seed(random_seed_gen())
 	ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 	suits = ['♠','♦','♥','♣']
 	deck = [rank+suit for suit in suits for rank in ranks]
@@ -227,7 +277,7 @@ def cards_hit(hand, deck):
 	return hand,deck
 
 def bj_deal():
-	deck = cards_decks(amt_decks = 4, split_deck = True)
+	deck = cards_decks(amt_decks = Config.config["gamble_params"]["@blackjack"]["decks"], split_deck = True)
 	phand = []
 	dhand = []
 	phand.append(deck.pop(0))
@@ -248,7 +298,7 @@ def bj_total(hand, show_softhand = False):
 			aceflag=True
 			total+= 1
 		else:
-			total+= parse_amount(card)
+			total+= parse_amount(card, force_no_decimal_calc = True)
 	if aceflag and total<12:
 		total+= 10
 		softhand = True
@@ -310,7 +360,7 @@ def bj_score(req, dealer_hand, player_hand, deal = False, stand = False, split =
 		msg = "\x02[H]\x02it or \x02[S]\x02tand"
 		if deal == True and not split:
 			if bj_total([player_hand[0]]) == bj_total([player_hand[1]]):
-				msg = "\x02[H]\x02it , \x02[S]\x02tand , \x02[D]ouble-down or S\x02[P]\x02lit"
+				msg = "\x02[H]\x02it , \x02[S]\x02tand , \x02[D]\x02ouble-down or S\x02[P]\x02lit"
 			else:
 				msg = "\x02[H]\x02it , \x02[S]\x02tand or \x02[D]\x02ouble-down"
 		hand_playon = True
@@ -377,17 +427,14 @@ def bj_player_auto(player_hand, dealer_hand, deck, req, split, hand1 = False):
 def hand_winner_tip(req, bet, pot_acct, winner_acct, token, hand_reply, hand_payout_bj = False):
 	if hand_payout_bj:
 		multiplier = 1.5
-		odds = "(3to2)"
+		odds = "[3to2]"
 	else:
 		multiplier = 1.0
-		odds = "(1to1)"
-	winnings = parse_amount(str(bet*multiplier),pot_acct, roundDown = True)
-	try:
-		Transactions.tip(token, pot_acct, winner_acct, (winnings+bet), tip_source = "@BLACKJACK")
-		won_string = "%s %i %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), winnings, coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
-		return req.reply("%s %s %s! (@Pot = %i)" % (hand_reply, won_string, odds, Transactions.balance(req.instance)))
-	except Transactions.NotEnoughMoney:
-		return req.reply("Bot ran out of winnings!")
+		odds = "[1to1]"
+	winmsg = game_winner_tip(token, bot_acct = pot_acct, player_acct = winner_acct, total_bet = bet, game = "@BLACKJACK_WIN", multiplier = multiplier)
+	if not winmsg: return
+	won_string = "%s %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), winmsg)
+	return req.reply("%s %s %s!%s" % (hand_reply, won_string, odds, pot_balance(req.instance)))
 
 def bj_cancel(token, bot_acct, player_acct, bet, bet2):
 	msg = "Previous game cancelled, bet(s) partially refunded."
@@ -413,31 +460,37 @@ def bj(req, arg):
 		conf_switch = False
 	acct = Irc.account_names([req.nick])[0]
 	host = Irc.get_host(req.source)
-	minbet = 5
-	maxbet = 1000
+	minbet = parse_amount(Config.config["gamble_params"]["@blackjack"]["minbet"], min_amount='.0005')
+	maxbet = parse_amount(Config.config["gamble_params"]["@blackjack"]["maxbet"], min_amount='.0005')
 	# if Irc.is_admin(req.source):
 	# 	maxbet = 10000
 	tempmaxbet = check_gamble_raise(req.nick)
 	if tempmaxbet: maxbet = tempmaxbet
 	# if not Irc.is_admin(req.source):
 	# 	return # temporary disable
-	if host in Global.gamble_list and Global.gamble_list[host] != acct and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
-		Transactions.lock(acct, True)
-	user_valid = validate_user(acct)
+	if "@HOSTS" not in Global.gamble_list: Global.gamble_list["@HOSTS"] = {}
+	user_valid = validate_user(acct, host = host, nick = req.nick, hostlist = Global.gamble_list["@HOSTS"])
 	if user_valid != True: return req.notice_private(user_valid)
-	if req.target == req.nick and not Irc.is_admin(req.source):
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
+	if (req.target == req.nick or req.target not in Config.config["instances"][req.instance]) and not Irc.is_super_admin(req.source):
 		return req.reply("Can't bj in private!")
 	if req.nick in Global.response_read_timers and not Global.response_read_timers[req.nick]["cmd"] == "bj":
 		return req.notice_private("One game at a time!")
 	curtime = time.time()
-	random.seed(curtime*1000)
-	gamble_timer_reply = check_gamble_timer(targetchannel = req.target, cmd_args = arg, nick = req.nick, source = req.source, acct = acct, curtime = curtime, timer_min = 4, timer_max = 8, penalty_min = 5, penalty_max = 15)
+	random.seed(random_seed_gen())
+	timer_vals = Config.config["gamble_params"]["@blackjack"]["timers"]
+	gamble_timer_reply = check_gamble_timer(instance = req.instance, targetchannel = req.target, cmd_args = arg, nick = req.nick, source = req.source, acct = acct, timers = timer_vals)
 	if gamble_timer_reply: return req.reply(gamble_timer_reply)
 	toacct = req.instance
 	choice = arg[0].lower()
+	choice_digits_accepted = [1,2,3,4]
+	if arg[0].isdigit():
+		choice_is_digit = int(arg[0])
+	else:
+		choice_is_digit = False
 	token = Logger.token()
 	Logger.log("c","BJ triggered: %s Choice: %s" % (arg, choice))
-	if len(arg) > 0 and not (arg[0].isdigit() and parse_amount(arg[0]) >= 5) and req.nick in Global.response_read_timers:
+	if len(arg) > 0 and not (choice_is_digit != False and choice_is_digit not in choice_digits_accepted) and req.nick in Global.response_read_timers:
 		if choice == "end-game":
 			Global.response_read_timers.pop(req.nick)
 			Logger.log("c","BJ ended, timer removed")
@@ -491,7 +544,7 @@ def bj(req, arg):
 				if not hand_playon:
 					as_notice = False
 			except Transactions.NotEnoughMoney:
-				return req.notice_private("You tried to double down %i %s but you only have %i %s" % (bet, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+				return req.notice_private("You tried to double down %s %s but you only have %s %s" % (print_amount(bet), Config.config["coinab"], print_amount(Transactions.balance(acct)), Config.config["coinab"]))
 		elif bj_start and (choice == "split" or choice == "p" or choice == "4") and (bj_total([player_hand[0]]) == bj_total([player_hand[1]])) or (Irc.is_super_admin(req.source) and len(arg) == 2 and arg[1] == "givemeasplit"):
 			choiceFound = True
 			try:
@@ -503,7 +556,7 @@ def bj(req, arg):
 				player_hand2, deck = cards_hit(player_hand2, deck)
 				hand_win, hand_reply, hand_playon, hand_draw, hand_payout_bj, as_notice = bj_score(req, dealer_hand, player_hand, split = bj_split, hand1 = True)
 			except Transactions.NotEnoughMoney:
-				return req.notice_private("You tried to split on %i %s but you only have %i %s" % (bet, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+				return req.notice_private("You tried to split on %s %s but you only have %s %s" % (print_amount(bet), Config.config["coinab"], print_amount(Transactions.balance(acct)), Config.config["coinab"]))
 		else:
 			choice = "none"
 		if choiceFound:
@@ -566,9 +619,9 @@ def bj(req, arg):
 						req.notice_private(hand2_reply)
 					elif len(hand2_reply) > 2:
 						req.reply(hand2_reply)
-	elif req.nick not in Global.response_read_timers or (req.nick in Global.response_read_timers and Global.response_read_timers[req.nick]["time"] + (5*60) < curtime) or (arg[0].isdigit() and parse_amount(arg[0]) >= minbet):
+	elif req.nick not in Global.response_read_timers or (req.nick in Global.response_read_timers and Global.response_read_timers[req.nick]["time"] + (5*60) < curtime) or (choice_is_digit != False and choice_is_digit not in choice_digits_accepted):
 		try:
-			amount = parse_amount(arg[0], acct)
+			amount = parse_amount(arg[0], acct, min_amount='.0005')
 		except ValueError as e:
 			return req.notice_private(str(e))
 		if req.nick in Global.response_read_timers and Global.response_read_timers[req.nick]["cmd"] == "bj":
@@ -576,17 +629,17 @@ def bj(req, arg):
 			req.notice_private(cancelmsg)
 			Global.response_read_timers.pop(req.nick)
 		if amount < minbet:
-			return req.reply("Don't be so cheap! %s %s minimum!" % (minbet, Config.config["coinab"]), True)
+			return req.reply("Don't be so cheap! %s %s minimum!" % (print_amount(minbet), Config.config["coinab"]), True)
 		elif amount > maxbet:
-			return req.reply("Sorry, you can only BJ %i %s at a time." % (maxbet, Config.config["coinab"]), True)
+			return req.reply("Sorry, you can only BJ %s %s at a time." % (print_amount(maxbet), Config.config["coinab"]), True)
 		if conf_switch == "public":
 			bj_public = True
 		else:
 			bj_public = False
 		try:
-			Transactions.tip(token, acct, toacct, amount, tip_source = "@BLACKJACK")
+			Transactions.tip(token, acct, toacct, amount, tip_source = "@BLACKJACK_START")
 			add_gamble_timer(targetchannel = req.target, acct = acct, curtime = curtime)
-			Global.gamble_list[host] = acct
+			Global.gamble_list["@HOSTS"][host] = acct
 			dealer_hand, player_hand, deck = bj_deal()
 			if conf_switch == "auto" and not bj_total(dealer_hand) == 21 and not bj_total(player_hand) == 21:
 				as_notice = False
@@ -613,7 +666,7 @@ def bj(req, arg):
 			else:
 				return req.reply(hand_reply)
 		except Transactions.NotEnoughMoney:
-			req.notice_private("You tried to play %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+			req.notice_private("You tried to play %s %s but you only have %s %s" % (print_amount(amount), Config.config["coinab"], print_amount(Transactions.balance(acct)), Config.config["coinab"]))
 			return
 	else:
 		return req.notice_private("One game at a time!")
@@ -698,7 +751,7 @@ def roulette_roll(bet_choice, landon):
 		roul_multiplier = 3
 		odds_str = "(2to1)"
 	elif bet_choice.isdigit():
-		bet_choice_num = parse_amount(bet_choice, min_amount = 0)
+		bet_choice_num = int(bet_choice)
 		if bet_choice_num >= 0 and bet_choice_num <= 36 and bet_choice_num == landon:
 			roul_win = True
 			roul_multiplier = 36
@@ -713,8 +766,8 @@ def roulette(req, arg):
 	bet_count = len(arg)/2
 	acct = Irc.account_names([req.nick])[0]
 	host = Irc.get_host(req.source)
-	minbet = 5
-	maxbet = 1000
+	minbet = parse_amount(Config.config["gamble_params"]["@roulette"]["minbet"], min_amount='.0005')
+	maxbet = parse_amount(Config.config["gamble_params"]["@roulette"]["maxbet"], min_amount='.0005')
 	# if Irc.is_admin(req.source):
 	# 	maxbet = 10000
 	tempmaxbet = check_gamble_raise(req.nick)
@@ -722,19 +775,23 @@ def roulette(req, arg):
 	won_bet_count = 0
 	lost_bets = 0
 	total_bet_amt = 0
-	roul_valid_bets = ["even","odd","1st","2nd","3rd","low","high","red","black","topline","snake","c1","c2","c3","s1","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11","s12"]
-	roul_valid_bets_aliases = ["first","second","third","basket","col1","col2","col3","street1","street2","street3","street4","street5","street6","street7","street8","street9","street10","street11","street12"]
+	roul_valid_bets = ["even","odd","1st","2nd","3rd","low","high","red","black","topline","snake"]
+	roul_bets_help = ["col[1-3]","street[1-12]"]
+	roul_valid_bets_aliases = (
+		["c1","c2","c3","s1","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11","s12"] +
+		["first","second","third","basket","col1","col2","col3","street1","street2","street3","street4","street5","street6","street7","street8","street9","street10","street11","street12"] )
 	curtime = time.time()
-	random.seed(curtime*1000)
+	random.seed(random_seed_gen())
 	# if not Irc.is_admin(req.source):
 	# 	return # temporary disable
-	if host in Global.gamble_list and Global.gamble_list[host] != acct and not any(x.lower() == req.nick.lower() for x in Config.config["bridgebotnicks"]):
-		Transactions.lock(acct, True)
-	user_valid = validate_user(acct)
+	if "@HOSTS" not in Global.gamble_list: Global.gamble_list["@HOSTS"] = {}
+	user_valid = validate_user(acct, host = host, nick = req.nick, hostlist = Global.gamble_list["@HOSTS"])
 	if user_valid != True: return req.notice_private(user_valid)
-	if req.target == req.nick and not Irc.is_admin(req.source):
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
+	if (req.target == req.nick or req.target not in Config.config["instances"][req.instance]) and not Irc.is_super_admin(req.source):
 		return req.reply("Can't roulette in private!")
-	gamble_timer_reply = check_gamble_timer(targetchannel = req.target, cmd_args = arg, nick = req.nick, source = req.source, acct = acct, curtime = curtime, timer_min = 5, timer_max = 10, penalty_min = 10, penalty_max = 20)
+	timer_vals = Config.config["gamble_params"]["@roulette"]["timers"]
+	gamble_timer_reply = check_gamble_timer(instance = req.instance, targetchannel = req.target, cmd_args = arg, nick = req.nick, source = req.source, acct = acct, timers = timer_vals)
 	if gamble_timer_reply: return req.reply(gamble_timer_reply)
 	toacct = req.instance
 	token = Logger.token()
@@ -743,59 +800,71 @@ def roulette(req, arg):
 		bet_choice = arg[(1+argoffset)].lower()
 		if bet_choice not in (roul_valid_bets+roul_valid_bets_aliases) and not (bet_choice.isdigit() and int(bet_choice) >= 0 and int(bet_choice) <= 36):
 			# return req.reply(gethelp("roul"))
-			inval_bet_str = "Invalid bet, available bets: %s or number of choice 0-36" % (roul_valid_bets)
+			inval_bet_str = "Invalid bet, available bets: %s or number of choice 0-36" % ((roul_valid_bets+roul_bets_help))
 			if req.target not in Config.config["botchannels"]:
 				return req.notice_private(inval_bet_str)
 			else:
 				return req.reply(inval_bet_str)
 		try:
-			bet = parse_amount(arg[(0+argoffset)], acct)
-			arg[(0+argoffset)] = str(bet)
+			bet = parse_amount(arg[(0+argoffset)], acct, min_amount='.0005')
+			arg[(0+argoffset)] = bet
 		except ValueError as e:
 			return req.notice_private(str(e))
 		total_bet_amt = total_bet_amt + bet
 	if total_bet_amt < minbet:
-		return req.reply("Don't be so cheap! %s %s minimum!" % (minbet, Config.config["coinab"]), True)
+		return req.reply("Don't be so cheap! %s %s minimum!" % (print_amount(minbet), Config.config["coinab"]), True)
 	elif total_bet_amt > maxbet:
-		return req.reply("Sorry, only %i %s at a time." % (maxbet, Config.config["coinab"]), True)
+		return req.reply("Sorry, only %s %s at a time." % (print_amount(maxbet), Config.config["coinab"]), True)
 	add_gamble_timer(targetchannel = req.target, acct = acct, curtime = curtime)
-	Global.gamble_list[host] = acct
+	Global.gamble_list["@HOSTS"][host] = acct
 	roulette_nums = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
-	landon1 = random.choice(roulette_nums)
-	rindex = roulette_nums.index(landon1)
-	if rindex == 36: rindex = -1
-	landon2 = roulette_nums[rindex+1]
-	landon3 = roulette_nums[rindex+2]
-	reply = "Fondling balls.. %i .. %i .. landed on %i" % (landon1, landon2, landon3)
-	landon = landon3
+	r_red_nums = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
+	landon_nums = []
+	landon_nums.append(random.choice(roulette_nums))
+	rindex = roulette_nums.index(landon_nums[0])
+	if rindex == 0: rindex = 37
+	landon_nums.append(roulette_nums[rindex-1])
+	landon_nums.append(roulette_nums[rindex-2])
+	landon = landon_nums[0]
+	for x in range(len(landon_nums)):
+		if landon_nums[x] in r_red_nums:
+			landon_nums[x] = coloured_text(text = str(landon_nums[x]), colour = "04", channel = req.target)
+		elif landon_nums[x] == 0:
+			landon_nums[x] = coloured_text(text = str(landon_nums[x]), colour = "03", channel = req.target)
+		else:
+			landon_nums[x] = str(landon_nums[x])
+	reply = "Fondling a ball.. [ %s ][ %s ][ %s\x02%s\x02%s ]" % (landon_nums[2], landon_nums[1], coloured_text(text = ">>", colour = "03", channel = req.target), landon_nums[0], coloured_text(text = "<<", colour = "03", channel = req.target))
 	try:
-		Transactions.tip(token, acct, toacct, total_bet_amt, tip_source = "@ROULETTE")
+		Transactions.tip(token, acct, toacct, total_bet_amt, tip_source = "@ROULETTE_START")
 		for i in range(bet_count):
 			argoffset = i+i
-			bet = parse_amount(arg[(0+argoffset)], acct)
+			bet = arg[(0+argoffset)]
 			bet_choice = arg[(1+argoffset)].lower()
 			roul_win, roul_multiplier, odds_str = roulette_roll(bet_choice, landon)
 			if roul_win:
 				won_bet_count = won_bet_count + 1
-				roul_winnings = parse_amount(str(bet*roul_multiplier),toacct, roundDown = True)
+				roul_winnings = parse_amount(str(bet*roul_multiplier),toacct, roundDown = True, force_no_decimal_calc = True)
 				if bet_count > 1 and won_bet_count > 1:
-					reply = "%s + %i on %s %s" % (reply, (roul_winnings-bet), bet_choice.upper(), odds_str)
+					reply = "%s + %s on %s %s" % (reply, print_amount((roul_winnings-bet)), bet_choice.upper(), odds_str)
 				else:
-					won_string = "%s %i %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), (roul_winnings-bet), coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
+					won_string = "%s %s %s" % (coloured_text(text = "WON", colour = "03", channel = req.target), print_amount((roul_winnings-bet)), coloured_text(text = Config.config["coinab"], colour = "03", channel = req.target))
 					reply = "%s ... You %s on %s %s" % (reply, won_string, bet_choice.upper(), odds_str)
+
 				try:
-					Transactions.tip(token, toacct, acct, roul_winnings, tip_source = "@ROULETTE") # accts swapped
+					Transactions.tip(token, toacct, acct, roul_winnings, tip_source = "@ROULETTE_WIN") # accts swapped
 				except Transactions.NotEnoughMoney:
 					return req.notice_private("%s Bot ran out of winnings!" % (reply))
 			else:
 				if bet_count > 3:
 					lost_bets = lost_bets + bet
 				else:
-					reply = "%s ... You lost %i %s on %s %s" % (reply, bet, Config.config["coinab"], bet_choice.upper(), coloured_text(text = ":<", colour = "04", channel = req.target))
+					reply = "%s ... You lost %s %s on %s %s" % (reply, print_amount(bet), Config.config["coinab"], bet_choice.upper(), coloured_text(text = ":<", colour = "04", channel = req.target))
 	except Transactions.NotEnoughMoney:
-		return req.notice_private("%s You tried to play %i %s but you only have %i %s" % (reply, total_bet_amt, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+		return req.notice_private("%s You tried to play %s %s but you only have %s %s" % (reply, print_amount(total_bet_amt), Config.config["coinab"], print_amount(Transactions.balance(acct)), Config.config["coinab"]))
 	if lost_bets > 0:
-		reply = "%s ... You lost %i %s on poor choices %s" % (reply, lost_bets, Config.config["coinab"], coloured_text(text = ":<", colour = "04", channel = req.target))
+		reply = "%s ... You lost %s %s on poor choices %s" % (reply, print_amount(lost_bets), Config.config["coinab"], coloured_text(text = ":<", colour = "04", channel = req.target))
+	if won_bet_count > 0:
+		reply = "%s%s" % (reply, pot_balance(req.instance))
 	return req.reply(reply)
 
 

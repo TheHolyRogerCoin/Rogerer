@@ -1,4 +1,4 @@
-import sys, os, threading, traceback, time
+import sys, os, threading, traceback, time, math, decimal
 import theholyrogerrpc, theholyrogerrpc.connection, psycopg2
 import Config, Logger, Blocknotify
 
@@ -39,6 +39,49 @@ except TypeError:
 	theholyrogerrpc.connection.TheHolyRogerConnection.listsinceblock = patchedlistsinceblock
 # End of monkey-patching
 
+
+def checkdecimals(update = False):
+	db = database()
+	cur = db.cursor()
+	cur.execute("SELECT places FROM decimallock")
+	if cur.rowcount:
+		storedplaces = int(cur.fetchone()[0])
+	else:
+		storedplaces = 0
+	db.close()
+	if storedplaces != int(Config.config["decimalplaces"]):
+		if not update:
+			return False
+		if update:
+			if storedplaces < int(Config.config["decimalplaces"]):
+				updatedecimals(storedplaces)
+			else:
+				Logger.log("ce","Cant decrease decimal places.")
+	return True
+
+def roundingnum(places = False, use_custom = False):
+	if use_custom:
+		decimalplaces = int(places)
+	else:
+		decimalplaces = int(Config.config["decimalplaces"])
+	return math.pow(10,decimalplaces)
+
+def updatedecimals(oldplaces = 0):
+	db = database()
+	cur = db.cursor()
+	rounding = int(roundingnum() / roundingnum(places = oldplaces, use_custom = True))
+	Logger.log("c","Altering balances! * %s new: %s, old: %s" % (rounding, roundingnum(), roundingnum(places = oldplaces, use_custom = True)))
+	try:
+		cur.execute("UPDATE accounts SET balance = balance * %s", (rounding,))
+		cur.execute("UPDATE txlog SET amount = amount * %s", (rounding,))
+		cur.execute("UPDATE decimallock SET places = %s", (int(Config.config["decimalplaces"]),))
+	except:
+		db.close()
+		Logger.log("ce","Failure altering balances!")
+		raise
+	db.commit()
+	db.close()
+
 def txlog(cursor, token, amt, tx = None, address = None, src = None, dest = None):
 	cursor.execute("INSERT INTO txlog VALUES (%s, %s, %s, %s, %s, %s, %s)", (time.time(), token, src, dest, amt, tx, address))
 
@@ -50,8 +93,8 @@ def notify_block():
 	txlist = []
 	for tx in lb["transactions"]:
 		if tx.category == "receive" and tx.confirmations >= Config.config["confirmations"]:
-			txlist.append((int(tx.amount), tx.address, tx.txid.encode("ascii")))
-			Logger.log("c","INCOMING: %s %s %s" % (tx.amount, tx.txid.encode("ascii"), tx.address))
+			txlist.append((int((tx.amount)*decimal.Decimal(roundingnum())), tx.address, tx.txid.encode("ascii")))
+			Logger.log("c","INCOMING: %s %s %s" % ((tx.amount), tx.txid.encode("ascii"), tx.address))
 
 	if len(txlist):
 		addrlist = [(tx[1],) for tx in txlist]
@@ -67,9 +110,9 @@ def notify_block():
 			if cur.rowcount:
 				account = cur.fetchone()[0]
 				if tx.confirmations < Config.config["confirmations"]:
-					unconfirmed[account] = unconfirmed.get(account, 0) + int(tx.amount)
+					unconfirmed[account] = unconfirmed.get(account, 0) + int((tx.amount)*decimal.Decimal(roundingnum()))
 				else:
-					txlog(cur, Logger.token(), int(tx.amount), tx = tx.txid.encode("ascii"), address = tx.address, dest = account)
+					txlog(cur, Logger.token(), int((tx.amount)*decimal.Decimal(roundingnum())), tx = tx.txid.encode("ascii"), address = tx.address, dest = account)
 
 	cur.execute("UPDATE lastblock SET block = %s", (lb["lastblock"],))
 	db.commit()
@@ -119,15 +162,42 @@ def faucet_board(instance, category = 'jackpot'):
 	if category == 'losers':
 		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s ORDER BY amount ASC, timestamp DESC limit 1", ("@FAUCET", instance))
 	elif category == 'topwinner':
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount < 1000 ORDER BY amount DESC, timestamp DESC limit 1", ("@FAUCET", instance))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount < %s ORDER BY amount DESC, timestamp DESC limit 1", ("@FAUCET", instance, int(1000*roundingnum())))
 	elif category == 'runnerup1':
 		# cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE source= %s AND amount >= 3001 AND amount <= 5000 ORDER BY amount DESC, timestamp DESC limit 1", (instance,))
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount >= 1000 AND amount <= 2000 ORDER BY timestamp DESC limit 1", ("@FAUCET", instance))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount >= %s AND amount <= %s ORDER BY timestamp DESC limit 1", ("@FAUCET", instance, int(1000*roundingnum()), int(2000*roundingnum())))
 	elif category == 'jackpot':
-		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount >= 6000 ORDER BY timestamp DESC limit 1", ("@FAUCET", instance))
+		cur.execute("SELECT timestamp,destination,amount FROM txlog WHERE address= %s AND source= %s AND amount >= %s ORDER BY timestamp DESC limit 1", ("@FAUCET", instance, int(6000*roundingnum())))
 	if cur.rowcount:
 		r = cur.fetchone()
 		db.close()
+		return r
+	else:
+		db.close()
+		return False
+
+def get_game_stats(instance, mode = 'out', game_ident = "@POKER", acct = "", interval = "10 minutes", count = True):
+	if not isinstance(game_ident, list):
+		game_ident = [game_ident]
+	db = database()
+	cur = db.cursor()
+	if mode == 'out':
+		cur.execute("SELECT timestamp,amount FROM txlog WHERE ((timestamp < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - interval %s)) IS FALSE) AND address= ANY(%s) AND source= %s AND destination= %s ORDER BY timestamp DESC limit 2000", (interval, game_ident, instance, acct))
+	elif mode == 'out-sum':
+		cur.execute("SELECT SUM(amount) FROM txlog WHERE ((timestamp < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - interval %s)) IS FALSE) AND address ILIKE ANY(%s) AND source= %s AND destination= %s ", (interval, game_ident, instance, acct))
+	elif mode == 'in':
+		cur.execute("SELECT timestamp,amount FROM txlog WHERE ((timestamp < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - interval %s)) IS FALSE) AND address= ANY(%s) AND source= %s AND destination= %s ORDER BY timestamp DESC limit 2000", (interval, game_ident, acct, instance))
+	elif mode == 'in-sum':
+		cur.execute("SELECT SUM(amount) FROM txlog WHERE ((timestamp < EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - interval %s)) IS FALSE) AND address ILIKE ANY(%s) AND source= %s AND destination= %s ", (interval, game_ident, acct, instance))
+	if cur.rowcount:
+		r = cur.fetchone()
+		c = cur.rowcount
+		db.close()
+		if count: return c
+		if r[0] == None:
+			r = 0
+		else:
+			r = r[0]
 		return r
 	else:
 		db.close()
@@ -176,7 +246,7 @@ def withdraw(token, account, address, amount):
 	db = database()
 	cur = db.cursor()
 	try:
-		cur.execute("UPDATE accounts SET balance = balance - %s WHERE account = %s", (amount + Config.config["txfee"], account))
+		cur.execute("UPDATE accounts SET balance = balance - %s WHERE account = %s", (amount + int(decimal.Decimal(Config.config["txfee"])*decimal.Decimal(roundingnum())), account))
 	except psycopg2.IntegrityError as e:
 		raise NotEnoughMoney()
 	if not cur.rowcount:
@@ -188,7 +258,7 @@ def withdraw(token, account, address, amount):
 			daemon().walletpassphrase(Config.config["walletpassphrase"], 1)
 
 		# Perform transaction
-		tx = daemon().sendtoaddress(address, amount, comment = "sent with Rogerer")
+		tx = daemon().sendtoaddress(address, str(decimal.Decimal(amount)/decimal.Decimal(roundingnum())), comment = "sent with Rogerer")
 
 		# Lock wallet, if applicable
 		if Config.config.has_key('walletpassphrase'):
@@ -203,7 +273,7 @@ def withdraw(token, account, address, amount):
 		lock(account, True)
 		raise
 	db.commit()
-	txlog(cur, token, amount + Config.config["txfee"], tx = tx.encode("ascii"), address = address, src = account)
+	txlog(cur, token, amount + int(decimal.Decimal(Config.config["txfee"])*decimal.Decimal(roundingnum())), tx = tx.encode("ascii"), address = address, src = account)
 	db.commit()
 	db.close()
 	return tx.encode("ascii")
@@ -239,8 +309,8 @@ def balances():
 	db = database()
 	cur = db.cursor()
 	cur.execute("SELECT SUM(balance) FROM accounts")
-	balances = float(cur.fetchone()[0])
-	theholyrogerd = float(daemon().getbalance(minconf = Config.config["confirmations"]))
+	balances = decimal.Decimal(cur.fetchone()[0])
+	theholyrogerd = decimal.Decimal(daemon().getbalance(minconf = Config.config["confirmations"]))
 	db.close()
 	return (balances, theholyrogerd)
 

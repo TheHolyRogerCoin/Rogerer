@@ -124,7 +124,10 @@ def message(instance, source, target, text):
 			commandline = text
 		if len(text) > 1 and text[0] == Config.config["prefix"]:
 			commandline = text[1:]
-		elif (target != instance or Irc.is_super_admin(source)) and len(Global.response_read_timers) > 0 and nick in Global.response_read_timers or ("@roger_that" in Global.response_read_timers and (target in Config.config["welcome_channels"] or Irc.is_super_admin(source))):
+		elif (	len(Global.response_read_timers) > 0 and
+				(target != instance or Irc.is_super_admin(source)) and (
+					nick in Global.response_read_timers or 
+					("@roger_that" in Global.response_read_timers and target in Config.config["welcome_channels"]))):
 			if nick not in Global.response_read_timers and "@roger_that" in Global.response_read_timers:
 				theReadTimer = "@roger_that"
 				auto_or_text = text
@@ -138,10 +141,12 @@ def message(instance, source, target, text):
 				commandline = "%s %s" % (Global.response_read_timers[theReadTimer]["cmd"], text)
 			elif Global.response_read_timers[theReadTimer]["time"] + (10*time_multiplier) > t:
 				commandline = "%s %s" % (Global.response_read_timers[theReadTimer]["cmd"], auto_or_text)
-				Logger.log("c", "%s: timer expired (auto) for: %s on: %s, cmd: %s" % (instance, nick, theReadTimer, Global.response_read_timers[theReadTimer]["cmd"]))
+				Logger.log("c", "%s: timer expired (auto) for: %s on: %s, cmd: %s" % (
+					instance, nick, theReadTimer, Global.response_read_timers[theReadTimer]["cmd"]))
 			else:
 				commandline = "%s end-game" % (Global.response_read_timers[theReadTimer]["cmd"])
-				Logger.log("c", "%s: timer expired (ended) for: %s on: %s, cmd: %s" % (instance, nick, theReadTimer, Global.response_read_timers[theReadTimer]["cmd"]))
+				Logger.log("c", "%s: timer expired (ended) for: %s on: %s, cmd: %s" % (
+					instance, nick, theReadTimer, Global.response_read_timers[theReadTimer]["cmd"]))
 		# Track & update last time user talked in channel (ignore PM to bot for activity purposes)
 		if target.startswith('#'):
 			with Global.active_lock:
@@ -320,7 +325,7 @@ def quit(instance, source, _):
 				if account != None:
 					break
 		for channel in Global.account_cache:
-			if nick in Global.account_cache[channel] and ((channel in Global.active_list and (nick in Global.active_list[channel] and (curtime - Global.active_list[channel][nick]) > 86400)) or channel not in Global.active_list or nick not in Global.active_list[channel]):
+			if nick in Global.account_cache[channel]:
 				del Global.account_cache[channel][nick]
 				Logger.log("w", "Removing %s from %s" % (nick, channel))
 	if account != None and account != False:

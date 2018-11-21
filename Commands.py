@@ -1,15 +1,15 @@
 # coding=utf8
-import sys, os, subprocess, time, datetime, math, pprint, traceback, operator, random
+import sys, os, subprocess, time, datetime, math, decimal, pprint, traceback, operator, random
 import Irc, Transactions, Blocknotify, Logger, Global, Hooks, Config
 from collections import OrderedDict
 
 # nickserv_help_string = "You are not identified with freenode services (see /msg NickServ help - https://freenode.net/kb/answer/registration)"
 
-def validate_user(acct, host = False, nick = False, altnick = False, allow_discord_nicks = False, hostlist = []):
+def validate_user(acct, host = False, nick = False, altnick = False, allow_discord_nicks = False, hostlist = {}):
 	msg = True
 	if not acct:
 		msg = "You are not identified with freenode services (see /msg NickServ help - https://freenode.net/kb/answer/registration)"
-	elif allow_discord_nicks and host in hostlist and hostlist[host].lower() != acct.lower() and not any(x.lower() == nick.lower() for x in Config.config["bridgebotnicks"]):
+	elif len(hostlist) > 0 and host in hostlist and hostlist[host].lower() != acct.lower() and not any(x.lower() == nick.lower() for x in Config.config["bridgebotnicks"]):
 		Transactions.lock(acct, True)
 		Logger.irclog("Locked %s for using multiple accts (Previous acct: %s, Current acct: %s)" % (nick, hostlist[host], acct))
 	if Transactions.lock(acct):
@@ -34,6 +34,11 @@ def random_line(file):
 			line = aline
 	return line.strip()
 
+def random_seed_gen():
+	randseedtime = int(time.time()*1000000)
+	random.seed((randseedtime - (randseedtime/random.randint(2,9000)))*random.randint(3,32))
+	return (randseedtime - (randseedtime/random.randint(2,9000)))*random.randint(3,32)
+
 def coloured_text(text = "", colour = False, rainbow = False, channel = False):
 	if channel and channel in Config.config["stripcolours"]:
 		return text
@@ -46,15 +51,14 @@ def coloured_text(text = "", colour = False, rainbow = False, channel = False):
 		sep = " "
 	coloured_string = ""
 	for t in text:
-		if first:
-			onesep = ""
-		else:
-			onesep = sep
 		if not colour or rainbow:
 			colour = "%02d" % (random.randint(0,15),)
-		coloured_string = "%s%s\x03%s%s\x03" % (coloured_string, onesep, colour, t)
+		coloured_string = "%s%s\x03%s%s\x03" % (coloured_string, ("" if first else sep), colour, t)
 		first = False
 	return coloured_string
+
+def pot_balance(bot_nick):
+	return " (@Pot = %s)" % (print_amount(Transactions.balance(bot_nick)))
 
 commands = {}
 
@@ -68,12 +72,13 @@ def balance(req, _):
 	acct = Irc.account_names([req.nick])[0]
 	user_valid = validate_user(acct)
 	if user_valid != True: return req.notice_private(user_valid)
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
 	confirmed = Transactions.balance(acct)
 	pending = Transactions.balance_unconfirmed(acct)
 	if pending:
-		req.reply("Your balance is %i %s (+%i %s unconfirmed)" % (confirmed, Config.config["coinab"], pending, Config.config["coinab"]))
+		req.reply("Your balance is %s %s (+%s %s unconfirmed)" % (print_amount(confirmed), Config.config["coinab"], print_amount(pending), Config.config["coinab"]))
 	else:
-		req.reply("Your balance is %i %s" % (confirmed, Config.config["coinab"]))
+		req.reply("Your balance is %s %s" % (print_amount(confirmed), Config.config["coinab"]))
 commands["balance"] = balance
 commands["bal"] = balance
 
@@ -82,33 +87,55 @@ def deposit(req, _):
 	acct = Irc.account_names([req.nick])[0]
 	user_valid = validate_user(acct)
 	if user_valid != True: return req.notice_private(user_valid)
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
 	req.reply("To deposit, send coins to %s (transactions will be credited after %d confirmations)" % (Transactions.deposit_address(acct), Config.config["confirmations"]))
 commands["deposit"] = deposit
 
-def parse_amount(s, acct = False, all_offset = 0, min_amount = 1, integer_only = True, roundDown = False):
-	if acct and s.lower() == "all":
-		return max(Transactions.balance(acct) + all_offset, 1)
-	elif s.lower() in Config.config["parse_amount_strings"]:
-		s=float(Config.config["parse_amount_strings"][(s.lower())])
+def parse_amount(inp, acct = False, all_offset = 0, min_amount = '1', integer_only = True, roundDown = False, force_no_decimal_calc = False):
+	if not force_no_decimal_calc:
+		roundingnum = decimal.Decimal(Transactions.roundingnum())
+		min_amount = decimal.Decimal(min_amount)
+		all_offset = decimal.Decimal(all_offset)
+		min_amt_calc = int(min_amount*roundingnum)
 	else:
+		roundingnum = int(Transactions.roundingnum())
+		min_amount = int(min_amount)
+		all_offset = int(all_offset)
+		min_amt_calc = int(min_amount)
+	s = str(inp)
+	if acct and s.lower() == "all":
+		balance = Transactions.balance(acct) + int(all_offset*roundingnum)
+		if balance < min_amt_calc:
+			raise ValueError(repr(s) + " - must have %s %s minimum in account." % (min_amount, Config.config["coinab"]))
+		return balance
+	elif s.lower() in Config.config["parse_amount_strings"]:
+		s=decimal.Decimal(Config.config["parse_amount_strings"][(s.lower())])
+	if True:
 		try:
-			amount = float(s)
+			amount = decimal.Decimal(s)
 			if math.isnan(amount):
 				raise ValueError
-		except ValueError:
+		except (ValueError, decimal.InvalidOperation):
 			raise ValueError(repr(s) + " - invalid amount")
+		if not Transactions.checkdecimals():
+			raise ValueError(repr(s) + " - database decimal lock does not match.")
 		if amount > 1e12:
 			raise ValueError(repr(s) + " - invalid amount (value too large)")
-		if amount < min_amount:
-			raise ValueError(repr(s) + " - invalid amount (must be 1 or more)")
+		# if not int(amount) == amount and len(str(amount).split(".")[1]) > 8:
+		# 	raise ValueError(repr(s) + " - invalid amount (max 8 digits)")
+		if not force_no_decimal_calc:
+			amount = (amount*roundingnum)
+		if amount < min_amt_calc:
+			raise ValueError(repr(s) + " - invalid amount (must be %s or more)" % (min_amount))
 		if integer_only and not roundDown and not int(amount) == amount:
-			raise ValueError(repr(s) + " - invalid amount (should be integer)")
-		if len(str(float(amount)).split(".")[1]) > 8:
-			raise ValueError(repr(s) + " - invalid amount (max 8 digits)")
+			raise ValueError(repr(s) + " - invalid amount (max %i decimals)" % (Config.config["decimalplaces"]))
 		if integer_only:
 			return int(amount)
 		else:
 			return amount
+
+def print_amount(inp):
+	return "{:,}".format(decimal.Decimal(inp)/decimal.Decimal(Transactions.roundingnum()))
 
 def is_soak_ignored(account):
 	if "soakignore" in Config.config:
@@ -123,11 +150,12 @@ def withdraw(req, arg):
 	acct = Irc.account_names([req.nick])[0]
 	user_valid = validate_user(acct)
 	if user_valid != True: return req.notice_private(user_valid)
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
 	if len(arg) == 1:
-		amount = max(Transactions.balance(acct) - Config.config["txfee"], 1)
+		amount = parse_amount("all", acct, all_offset = ('-'+Config.config["txfee"]))
 	else:
 		try:
-			amount = parse_amount(arg[1], acct, all_offset = -1)
+			amount = parse_amount(arg[1], acct, all_offset = ('-'+Config.config["txfee"]))
 		except ValueError as e:
 			return req.notice_private(str(e))
 	to = arg[0]
@@ -138,7 +166,7 @@ def withdraw(req, arg):
 		tx = Transactions.withdraw(token, acct, to, amount)
 		req.reply("Coins have been sent, see https://explorer.theholyroger.com/tx/%s [%s]" % (tx, token))
 	except Transactions.NotEnoughMoney:
-		req.notice_private("You tried to withdraw %i %s (+%.3f %s TX fee) but you only have %i %s" % (amount, Config.config["coinab"], Config.config["txfee"], Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+		req.notice_private("You tried to withdraw %s %s (+%s %s TX fee) but you only have %s %s" % (print_amount(amount), Config.config["coinab"], Config.config["txfee"], Config.config["coinab"], print_amount(Transactions.balance(acct)), Config.config["coinab"]))
 	except Transactions.InsufficientFunds:
 		req.reply("Something went wrong, report this to TheHoliestRoger [%s]" % (token))
 		Logger.irclog("InsufficientFunds while executing '%s' from '%s'" % (req.text, req.nick))
@@ -175,6 +203,7 @@ def tip(req, arg, from_instance = False):
 		nick = req.instance
 	user_valid = validate_user(acct)
 	if user_valid != True: return req.notice_private(user_valid)
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
 	if not toacct:
 		check_acct_exists = Transactions.check_exists(to)
 		if check_acct_exists:
@@ -189,24 +218,24 @@ def tip(req, arg, from_instance = False):
 		if len(arg) > 2:
 			amount = 0
 			for i in range(1,len(arg)):
-				amount = amount + parse_amount(arg[i], acct)
+				amount = amount + parse_amount(arg[i], acct, min_amount='.0001')
 		else:
-			amount = parse_amount(arg[1], acct)
+			amount = parse_amount(arg[1], acct, min_amount='.0001')
 	except ValueError as e:
 		return req.notice_private(str(e))
-	if amount > 99999:
-		return req.say("%s tipped %i %s to %s from alohaferret's cold storage!" % (nick, amount, Config.config["coinab"], target_nick(to)))
+	if amount > (99999*Transactions.roundingnum()):
+		return req.say("%s tipped %s %s to %s from alohaferret's cold storage!" % (nick, print_amount(amount), Config.config["coinab"], target_nick(to)))
 	token = Logger.token()
 	try:
 		Transactions.tip(token, acct, toacct, amount)
 		if Irc.equal_nicks(req.nick, req.target):
 			req.reply("Done [%s]" % (token))
 		else:
-			req.say("%s %s %i %s!" % (nick, tip_str, amount, Config.config["coinab"]))
+			req.say("%s %s %s %s!" % (nick, tip_str, print_amount(amount), Config.config["coinab"]))
 			# req.notice_private("Tip ID: [%s]" % (token))
-		req.noticemsg(target_nick(to), "%s has tipped you %i %s (to claim /msg %s help) [%s]" % (nick, amount, Config.config["coinab"], req.instance, token), priority = 10)
+		req.noticemsg(target_nick(to), "%s has tipped you %s %s (to claim /msg %s help) [%s]" % (nick, print_amount(amount), Config.config["coinab"], req.instance, token), priority = 10)
 	except Transactions.NotEnoughMoney:
-		req.notice_private("You tried to tip %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+		req.notice_private("You tried to tip %s %s but you only have %s %s" % (print_amount(amount), Config.config["coinab"], print_amount(Transactions.balance(acct)), Config.config["coinab"]))
 commands["tip"] = tip
 commands["slap"] = tip
 commands["tickle"] = tip
@@ -218,6 +247,7 @@ def mtip(req, arg):
 	acct = Irc.account_names([req.nick])[0]
 	user_valid = validate_user(acct)
 	if user_valid != True: return req.notice_private(user_valid)
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
 	for i in range(0, len(arg), 2):
 		try:
 			arg[i + 1] = parse_amount(arg[i + 1], acct)
@@ -242,7 +272,7 @@ def mtip(req, arg):
 			total += amount
 	balance = Transactions.balance(acct)
 	if total > balance:
-		return req.notice_private("You tried to tip %i %s but you only have %i %s" % (total, Config.config["coinab"], balance, Config.config["coinab"]))
+		return req.notice_private("You tried to tip %s %s but you only have %s %s" % (print_amount(total), Config.config["coinab"], print_amount(balance), Config.config["coinab"]))
 	accounts = Irc.account_names([target_nick(target) for target in targets])
 	totip = {}
 	failed = ""
@@ -256,66 +286,89 @@ def mtip(req, arg):
 			failed += " %s (mismatch)" % (targets[i])
 		else:
 			totip[accounts[i]] = totip.get(accounts[i], 0) + amounts[i]
-			tipped += " %s %d" % (target_nick(targets[i]), amounts[i])
+			tipped += " %s %s" % (target_nick(targets[i]), print_amount(amounts[i]))
 	token = Logger.token()
 	try:
 		Transactions.tip_multiple(token, acct, totip)
 		tipped += " [%s]" % (token)
 	except Transactions.NotEnoughMoney:
-		return req.notice_private("You tried to tip %i %s but you only have %i %s" % (total, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+		return req.notice_private("You tried to tip %s %s but you only have %s %s" % (print_amount(total), Config.config["coinab"], print_amount(Transactions.balance(acct)), Config.config["coinab"]))
 	output = "Tipped:" + tipped
 	if len(failed):
 		output += "  Failed:" + failed
 	req.reply(output)
 commands["mtip"] = mtip
 
+def faucet_stats(choice, instance):
+	if choice == "winners" or choice == "top" or choice == "leaders":
+		runnerup1_row = Transactions.faucet_board(instance,'runnerup1')
+		if runnerup1_row:
+			runnerup1_time = datetime.datetime.fromtimestamp(int(runnerup1_row[0])).strftime('%Y-%m-%d')
+			str_runner1 = (" Last runnerup was %s (%s %s) on %s." % (runnerup1_row[1], print_amount(runnerup1_row[2]), Config.config["coinab"], runnerup1_time))
+		else:
+			str_runner1 = ""
+		jackpot_row = Transactions.faucet_board(instance,'jackpot')
+		if jackpot_row:
+			jackpot_time = datetime.datetime.fromtimestamp(int(jackpot_row[0])).strftime('%Y-%m-%d')
+			str_jackpot = (" Last jackpot winner was %s (%s %s) on %s." % (jackpot_row[1], print_amount(jackpot_row[2]), Config.config["coinab"], jackpot_time))
+		else:
+			str_jackpot = ""
+		topwinner_row = Transactions.faucet_board(instance,'topwinner')
+		if topwinner_row:
+			topwinner_time = datetime.datetime.fromtimestamp(int(topwinner_row[0])).strftime('%Y-%m-%d')
+			if not runnerup1_row and not jackpot_row:
+				str_topwinner_p = "Highest winner so far is"
+			else:
+				str_topwinner_p = "Followed by"
+			str_topwinner = (" %s %s (%s %s) on %s!" % (str_topwinner_p, topwinner_row[1], print_amount(topwinner_row[2]), Config.config["coinab"], topwinner_time))
+		else:
+			str_topwinner = ""
+		return "%s%s%s" % (str_jackpot, str_runner1, str_topwinner)
+	if choice == "losers" or choice == "bottom":
+		loser_row = Transactions.faucet_board(instance,'losers')
+		if loser_row:
+			loser_time = datetime.datetime.fromtimestamp(int(loser_row[0])).strftime('%Y-%m-%d')
+			str_loser_p = "The loser is"
+			str_loser = ("%s %s (%s %s) on %s!" % (str_loser_p, loser_row[1], print_amount(loser_row[2]), Config.config["coinab"], loser_time))
+		else:
+			str_loser = "No loser yet!"
+		return "%s" % (str_loser)
+	return False
+
+def faucet_amount_gen():
+	amounts=[]
+	for i in range (50):
+		amounts.append(random.randint((1),(1*Transactions.roundingnum()))) 	# 30.0% chance of dropping 1-50 ROGER
+	for i in range (896):
+		amounts.append(random.randint((2*Transactions.roundingnum()),(50*Transactions.roundingnum()))) 	# 64.6% chance of dropping 1-50 ROGER
+	for i in range (40):
+		amounts.append(random.randint((51*Transactions.roundingnum()),(200*Transactions.roundingnum()))) 	# 4% chance of dropping 51-200 ROGER
+	for i in range (10):
+		amounts.append(random.randint((201*Transactions.roundingnum()),(500*Transactions.roundingnum()))) 	# 1% chance of dropping 201-500 ROGER
+	for i in range (3):
+		amounts.append(random.randint((1000*Transactions.roundingnum()),(2000*Transactions.roundingnum()))) # 0.3% chance of dropping 1000-2000 ROGER
+	for i in range (1):
+		amounts.append((6000*Transactions.roundingnum()))					# 0.1% chance of dropping 6000 ROGER
+	return random.choice(amounts)
+
 def faucet(req, arg):
 	"""%faucet - Sends you a random amount of coins from the pot"""
 	if len(arg) > 0:
-		if arg[0] == "winners" or arg[0] == "top" or arg[0] == "leaders":
-			runnerup1_row = Transactions.faucet_board(req.instance,'runnerup1')
-			if runnerup1_row:
-				runnerup1_time = datetime.datetime.fromtimestamp(int(runnerup1_row[0])).strftime('%Y-%m-%d')
-				str_runner1 = (" Last runnerup was %s (%i %s) on %s." % (runnerup1_row[1], runnerup1_row[2], Config.config["coinab"], runnerup1_time))
-			else:
-				str_runner1 = ""
-			jackpot_row = Transactions.faucet_board(req.instance,'jackpot')
-			if jackpot_row:
-				jackpot_time = datetime.datetime.fromtimestamp(int(jackpot_row[0])).strftime('%Y-%m-%d')
-				str_jackpot = (" Last jackpot winner was %s (%i %s) on %s." % (jackpot_row[1], jackpot_row[2], Config.config["coinab"], jackpot_time))
-			else:
-				str_jackpot = ""
-			topwinner_row = Transactions.faucet_board(req.instance,'topwinner')
-			if topwinner_row:
-				topwinner_time = datetime.datetime.fromtimestamp(int(topwinner_row[0])).strftime('%Y-%m-%d')
-				if not runnerup1_row and not jackpot_row:
-					str_topwinner_p = "Highest winner so far is"
-				else:
-					str_topwinner_p = "Followed by"
-				str_topwinner = (" %s %s (%i %s) on %s!" % (str_topwinner_p, topwinner_row[1], topwinner_row[2], Config.config["coinab"], topwinner_time))
-			else:
-				str_topwinner = ""
-			return req.say("%s%s%s" % (str_jackpot, str_runner1, str_topwinner))
-		if arg[0] == "losers" or arg[0] == "bottom":
-			loser_row = Transactions.faucet_board(req.instance,'losers')
-			if loser_row:
-				loser_time = datetime.datetime.fromtimestamp(int(loser_row[0])).strftime('%Y-%m-%d')
-				str_loser_p = "The loser is"
-				str_loser = ("%s %s (%i %s) on %s!" % (str_loser_p, loser_row[1], loser_row[2], Config.config["coinab"], loser_time))
-			else:
-				str_loser = "No loser yet!"
-			return req.say("%s" % (str_loser))
+		faucetStats = faucet_stats(arg[0], req.instance)
+		if faucetStats != False: return req.say(faucetStats)
 	toacct = Irc.account_names([req.nick])[0]
 	host = Irc.get_host(req.source)
 	curtime = time.time()
-	random.seed(curtime*1000)
-	user_valid, toacct = validate_user(toacct, host = host, nick = req.nick, altnick = req.altnick, allow_discord_nicks = True, hostlist = Global.faucet_list)
+	random.seed(random_seed_gen())
+	if "@HOSTS" not in Global.faucet_list: Global.faucet_list["@HOSTS"] = {}
+	user_valid, toacct = validate_user(toacct, host = host, nick = req.nick, altnick = req.altnick, allow_discord_nicks = True, hostlist = Global.faucet_list["@HOSTS"])
 	if user_valid != True:
 		if "Quiet" == user_valid: return
 		return req.notice_private(user_valid)
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
 	if is_soak_ignored(toacct):
 		return
-	if req.target == req.nick and not Irc.is_super_admin(req.source):
+	if (req.target == req.nick or req.target not in Config.config["instances"][req.instance]) and not Irc.is_super_admin(req.source):
 		return req.reply("Can't faucet in private!")
 	timer = random.randint((60*60),(4*60*60))
 	if toacct in Global.faucet_list and Global.faucet_list[toacct] + timer > curtime:
@@ -331,27 +384,14 @@ def faucet(req, arg):
 			timeUnit = "minutes"
 		return req.reply("Sorry, no %ss around here! Try in %.1f %s." % (Config.config["coinab"], difference, timeUnit), True)
 	acct = req.instance
-	lotto=[]
-	for i in range (946):
-		lotto.append(random.randint(1,50)) 	# 94.6% chance of dropping 1-50 ROGER
-	for i in range (40):
-		lotto.append(random.randint(51,200)) 	# 4% chance of dropping 51-200 ROGER
-	for i in range (10):
-		lotto.append(random.randint(201,500)) 	# 1% chance of dropping 201-500 ROGER
-	for i in range (3):
-		lotto.append(random.randint(1000,2000)) # 0.3% chance of dropping 1000-2000 ROGER
-	for i in range (1):
-		lotto.append(6000) 					# 0.1% chance of dropping 6000 ROGER
-	amount = str(random.choice(lotto))
-	try:
-		amount = parse_amount(amount, acct)
-	except ValueError as e:
-		return req.notice_private(str(e))
+
+	amount = faucet_amount_gen()
+
 	topwinner_row = Transactions.faucet_board(req.instance,'topwinner')
 	loser_row = Transactions.faucet_board(req.instance,'losers')
-	if not topwinner_row or (amount >= topwinner_row[2] and amount < 1000):
+	if not topwinner_row or (amount >= topwinner_row[2] and amount < parse_amount(1000)):
 		newhighest = " (New high!)"
-	elif not loser_row or (amount <= loser_row[2] and amount < 1000):
+	elif not loser_row or (amount <= loser_row[2] and amount < parse_amount(1000)):
 		newhighest = " (New low!)"
 	else:
 		newhighest = ""
@@ -359,9 +399,9 @@ def faucet(req, arg):
 	try:
 		Transactions.tip(token, acct, toacct, amount, tip_source = "@FAUCET")
 		quote = str(random_line('quotes_faucet'))
-		req.say("%s found %i %s ($0.00)! %s%s (@Pot = %i)" % (req.altnick, amount, Config.config["coinab"], quote, newhighest, Transactions.balance(req.instance)))
+		req.say("%s found %s %s ($0.00)! %s%s%s" % (req.altnick, print_amount(amount), Config.config["coinab"], quote, newhighest, pot_balance(req.instance)))
 		Global.faucet_list[toacct] = curtime
-		Global.faucet_list[host] = toacct
+		Global.faucet_list["@HOSTS"][host] = toacct
 		return
 	except Transactions.NotEnoughMoney:
 		req.reply("We're all out of %s!!" % (Config.config["coinab"]), True)
@@ -375,7 +415,7 @@ def active(req, arg):
 	if user_valid != True: return req.notice_private(user_valid)
 	for i in range(0, len(arg), 1):
 			try:
-					arg[i] = parse_amount(arg[i], acct)
+					arg[i] = parse_amount(arg[i], force_no_decimal_calc = True)
 			except ValueError as e:
 					return req.notice_private(str(e))
 	activeseconds = 86400
@@ -395,11 +435,26 @@ def active(req, arg):
 					curactivetime = -1 # if not found default to expired
 			target = oneactive
 			if target != None and target != acct and target != req.nick and target != req.instance and target not in targets and not is_soak_ignored(target) and curactivetime > 0 and curactivetime < activeseconds:
+					targets.append(Global.account_cache[req.target][target])
+					if Irc.getacctnick(target) and not Global.acctnick_list[target] == None:
+							targetnicks.append(str(Global.acctnick_list[target]))
+					else:
+							targetnicks.append(str(target))
+
+	for oneactive in Global.active_list[req.target].keys():
+			try:
+					curactivetime = curtime - Global.active_list[req.target][oneactive]
+			except:
+					curactivetime = -1 # if not found default to expired
+			target = oneactive
+			check_acct_exists = Transactions.check_exists(target)
+			if target != None and target != acct and check_acct_exists and target != req.nick and target != req.instance and target not in targets and not is_soak_ignored(target) and curactivetime > 0 and curactivetime < activeseconds:
 					targets.append(target)
 					if Irc.getacctnick(target) and not Global.acctnick_list[target] == None:
 							targetnicks.append(str(Global.acctnick_list[target]))
 					else:
 							targetnicks.append(str(target))
+
 	accounts = Irc.account_names(targetnicks)
 	failedcount = 0
 	# we need a count of how many will fail to do calculations so pre-loop list
@@ -421,23 +476,28 @@ def soak(req, arg, from_instance = False):
 		nick = req.instance
 	user_valid = validate_user(acct)
 	if user_valid != True: return req.notice_private(user_valid)
-	for i in range(0, len(arg), 1):
-			try:
-					arg[i] = parse_amount(arg[i], acct)
-			except ValueError as e:
-					return req.notice_private(str(e))
-	activeseconds = 86400
-	if len(arg) > 1:
-			activeseconds = int(arg[1]) * 60
-	if activeseconds < 60:
-			activeseconds = 600
-	elif activeseconds > 86400:
-			activeseconds = 86400
-	curtime = time.time()
-	targets = []
-	targetnicks = []
-	failed = ""
-	if req.target == req.nick:
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
+	# for i in range(0, len(arg), 1):
+	# 		try:
+	# 				arg[i] = parse_amount(arg[i], force_no_decimal_calc = True)
+	# 		except ValueError as e:
+	# 				return req.notice_private(str(e))
+	try:
+		activeseconds = 86400
+		if len(arg) > 1:
+				activeseconds = parse_amount(arg[1], force_no_decimal_calc = True) * 60
+		if activeseconds < 60:
+				activeseconds = 600
+		elif activeseconds > 86400:
+				activeseconds = 86400
+		curtime = time.time()
+		targets = []
+		targetnicks = []
+		failed = ""
+		total_soak_amt = parse_amount(arg[0], acct)
+	except ValueError as e:
+		return req.notice_private(str(e))
+	if (req.target == req.nick or req.target not in Config.config["instances"][req.instance]) and not Irc.is_super_admin(req.source):
 		return req.reply("Can't soak in private!")
 	for oneactive in Global.account_cache[req.target].keys():
 			try:
@@ -446,6 +506,20 @@ def soak(req, arg, from_instance = False):
 					curactivetime = -1 # if not found default to expired
 			target = oneactive
 			if target != None and target != acct and target != nick and target != req.instance and target not in targets and not is_soak_ignored(target) and curactivetime > 0 and curactivetime < activeseconds:
+					targets.append(Global.account_cache[req.target][target])
+					if Irc.getacctnick(target) and not Global.acctnick_list[target] == None:
+							targetnicks.append(str(Global.acctnick_list[target]))
+					else:
+							targetnicks.append(str(target))
+
+	for oneactive in Global.active_list[req.target].keys():
+			try:
+					curactivetime = curtime - Global.active_list[req.target][oneactive]
+			except:
+					curactivetime = -1 # if not found default to expired
+			target = oneactive
+			check_acct_exists = Transactions.check_exists(target)
+			if target != None and target != acct and check_acct_exists and target != nick and target != req.instance and target not in targets and not is_soak_ignored(target) and curactivetime > 0 and curactivetime < activeseconds:
 					targets.append(target)
 					if Irc.getacctnick(target) and not Global.acctnick_list[target] == None:
 							targetnicks.append(str(Global.acctnick_list[target]))
@@ -463,16 +537,16 @@ def soak(req, arg, from_instance = False):
 	if (len(targets) - failedcount) < MinActive:
 			return req.reply("This place seems dead. (Maybe try specifying more minutes..)")
 	scraps = 0
-	amount = int(arg[0] / (len(targets) - failedcount))
+	amount = int(total_soak_amt / (len(targets) - failedcount))
 	total = (len(targets) - failedcount) * amount
-	scraps = int(arg[0]) - total
+	scraps = int(total_soak_amt) - total
 	if scraps <= 0:
 			scraps = 0
 	balance = Transactions.balance(acct)
 	if total <= 0:
-			return req.reply("Unable to soak (Not enough to go around, %d %s Minimum)" % ((len(targets) - failedcount), Config.config["coinab"]))
+			return req.reply("Unable to soak (Not enough to go around, %s %s Minimum)" % (print_amount((len(targets) - failedcount)), Config.config["coinab"]))
 	if total + scraps > balance:
-			return req.notice_private("You tried to soak %.0f %s but you only have %.0f %s" % (total+scraps, Config.config["coinab"], balance, Config.config["coinab"]))
+			return req.notice_private("You tried to soak %s %s but you only have %s %s" % (print_amount((total+scraps)), Config.config["coinab"], print_amount(balance), Config.config["coinab"]))
 	totip = {}
 	tipped = ""
 	for i in range(len(accounts)):
@@ -492,8 +566,8 @@ def soak(req, arg, from_instance = False):
 	try:
 			Transactions.tip_multiple(token, acct, totip, tip_source = "@SOAK")
 	except Transactions.NotEnoughMoney:
-			return req.notice_private("You tried to soak %.0f %s but you only have %.0f %s" % (total, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
-	output = "%s is soaking %d users with %d %s:" % (nick, len(tippednicks), amount, Config.config["coinab"])
+			return req.notice_private("You tried to soak %s %s but you only have %s %s" % (print_amount((total)), Config.config["coinab"], print_amount(Transactions.balance(acct)), Config.config["coinab"]))
+	output = "%s is soaking %d users with %s %s:" % (nick, len(tippednicks), print_amount(amount), Config.config["coinab"])
 	# only show nicks if not too many active, if large enough total (default 1 to always show or change), if nick list changed or if enough time has passed
 	if len(tippednicks) > 100 or total + scraps < 1 or ((acct in Global.nicks_last_shown and Global.nicks_last_shown[acct] == tipped) and (acct+":last" in Global.nicks_last_shown and curtime < Global.nicks_last_shown[acct+":last"] + 600)):
 			output += " (See previous nick list ) [%s]" % (token)
@@ -518,6 +592,7 @@ def soakignore(req, arg):
 	acct = Irc.account_names([req.nick])[0]
 	user_valid = validate_user(acct)
 	if user_valid != True: return req.notice_private(user_valid)
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
 	if not Irc.is_admin(req.source):
 		return req.notice_private("You are not authorized to use this command")
 	if not "soakignore" in Config.config:
@@ -533,6 +608,7 @@ def soakignore(req, arg):
 	req.reply(output)
 commands["soakignore"] = soakignore
 
+# DECIMALS TO HERE
 def donate(req, arg):
 	"""%donate <amount> - Donate 'amount' coins to help fund the faucet"""
 	if len(arg) < 1:
@@ -540,6 +616,7 @@ def donate(req, arg):
 	acct = Irc.account_names([req.nick])[0]
 	user_valid = validate_user(acct)
 	if user_valid != True: return req.notice_private(user_valid)
+	if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
 	toacct = req.instance
 	try:
 		amount = parse_amount(arg[0], acct)
@@ -548,9 +625,9 @@ def donate(req, arg):
 	token = Logger.token()
 	try:
 		Transactions.tip(token, acct, toacct, amount)
-		req.reply("Donated %i %s, thank you very much for your donation [%s]" % (amount, Config.config["coinab"], token))
+		req.reply("Donated %s %s, thank you very much for your donation [%s]%s" % (print_amount(amount), Config.config["coinab"], token, pot_balance(req.instance)))
 	except Transactions.NotEnoughMoney:
-		req.notice_private("You tried to donate %i %s but you only have %i %s" % (amount, Config.config["coinab"], Transactions.balance(acct), Config.config["coinab"]))
+		req.notice_private("You tried to donate %s %s but you only have %s %s" % (print_amount(amount), Config.config["coinab"], print_amount(Transactions.balance(acct)), Config.config["coinab"]))
 commands["donate"] = donate
 
 def gethelp(name):
@@ -594,6 +671,7 @@ def admin(req, arg):
 	if len(arg) and Irc.is_admin(req.source) or Irc.is_super_admin(req.source):
 		command = arg[0]
 		arg = arg[1:]
+		if Config.config['maintenance_mode'] and not Irc.is_super_admin(req.source): return req.notice_private("Bot under maintenance.")
 		if command == "reload" and Irc.is_super_admin(req.source):
 			for mod in arg:
 				reload(sys.modules[mod])
@@ -683,7 +761,7 @@ def admin(req, arg):
 			database, theholyrogerd = Transactions.balances()
 			botconfirmed = Transactions.balance(req.instance)
 			botpending = Transactions.balance_unconfirmed(req.instance)
-			req.reply("Node Wallet: %.2f; Database: %.2f; Bot Account: %.2f (%.2f unconfirmed)" % (theholyrogerd, database, botconfirmed, botpending))
+			req.reply("Node Wallet: %s; Database: %s; Bot Account: %s (%s unconfirmed)" % ("{:,}".format(theholyrogerd), print_amount(database), print_amount(botconfirmed), print_amount(botpending)))
 		elif command == "balance":
 			if len(arg):
 				target = arg[0]
@@ -692,7 +770,7 @@ def admin(req, arg):
 					targetacct = target
 				if targetacct:
 					targetbal = Transactions.balance(targetacct)
-					req.reply("%s's balance is %i %s" % (target, targetbal, Config.config["coinab"]))
+					req.reply("%s's balance is %s %s" % (target, print_amount(targetbal), Config.config["coinab"]))
 				else:
 					req.reply("%s not found in database." % (target))
 		elif command == "blocks":
@@ -701,7 +779,7 @@ def admin(req, arg):
 			req.reply("Best block: %s, Last tx block: %s, Blocks: %s" % (hashd, hashb, mining_info.blocks))
 		elif command == "info":
 			mining_info, net_info, hashd = Transactions.get_all_info()
-			req.reply("TheHolyRogerCoin (ROGER) v3r | Client: %s | Proto: %s | Blocks: %s | Diff: %.2f | Network Hash: %.3f GH | Conns: %s " % (net_info.version, net_info.protocolversion, mining_info.blocks, mining_info.difficulty, (mining_info.networkhashps/1000000000), net_info.connections))
+			req.reply("TheHolyRogerCoin (ROGER) v3r | Decimals: %i | Client: %s | Proto: %s | Blocks: %s | Diff: %.2f | Network Hash: %.3f GH | Conns: %s " % (Transactions.roundingnum(),net_info.version, net_info.protocolversion, mining_info.blocks, mining_info.difficulty, (mining_info.networkhashps/1000000000), net_info.connections))
 		elif command == "lock":
 			if len(arg) > 1:
 				if arg[1] == "on":
@@ -719,19 +797,32 @@ def admin(req, arg):
 			req.reply("%s" % (output) if output else "Failed")
 			output = subprocess.check_output(["git", "reset", "--hard", arg[0]])
 			req.reply("%s" % (output) if output else "Failed")
-		elif command == "host":
-			if len(arg) > 1 and arg[0] in Global.faucet_list:
-				Global.faucet_list[arg[0]] = arg[1]
+		elif command == "faucet-host":
+			if "@HOSTS" not in Global.faucet_list: Global.faucet_list["@HOSTS"] = {}
+			if len(arg) > 1 and arg[0] in Global.faucet_list["@HOSTS"]:
+				Global.faucet_list["@HOSTS"][arg[0]] = arg[1]
 				req.reply("Done")
-			elif len(arg) and arg[0] in Global.faucet_list:
-				req.reply("Host [%s] assigned to [%s]" % (arg[0], Global.faucet_list[arg[0]]) if arg[0] in Global.faucet_list else "Host [%s] does not exist" % (arg[0]))
-		elif command == "faucetreset":
+			elif len(arg) and arg[0] in Global.faucet_list["@HOSTS"]:
+				req.reply("Host [%s] assigned to [%s]" % (arg[0], Global.faucet_list["@HOSTS"][arg[0]]) if arg[0] in Global.faucet_list["@HOSTS"] else "Host [%s] does not exist" % (arg[0]))
+		elif command == "gamble-host":
+			if "@HOSTS" not in Global.gamble_list: Global.gamble_list["@HOSTS"] = {}
+			if len(arg) > 1 and arg[0] in Global.gamble_list["@HOSTS"]:
+				Global.gamble_list["@HOSTS"][arg[0]] = arg[1]
+				req.reply("Done")
+			elif len(arg) and arg[0] in Global.gamble_list["@HOSTS"]:
+				req.reply("Host [%s] assigned to [%s]" % (arg[0], Global.gamble_list["@HOSTS"][arg[0]]) if arg[0] in Global.gamble_list["@HOSTS"] else "Host [%s] does not exist" % (arg[0]))
+		elif command == "faucet-reset":
 			if len(arg) > 1 and arg[0] in Global.faucet_list:
 				Global.faucet_list.pop(arg[0])
 				req.reply("Done")
 			elif len(arg) and arg[0] in Global.faucet_list:
 				req.reply("Faucet [%s] timer at [%s]" % (arg[0], datetime.datetime.fromtimestamp(int(Global.faucet_list[arg[0]])).strftime('%Y-%m-%d %H:%M')) if arg[0] in Global.faucet_list else "User [%s] does not exist" % (arg[0]))
-		elif command == "gamblereset":
+			elif len(arg) == 1 and arg[0] == "clearall" and Irc.is_super_admin(req.source):
+				Global.faucet_list = {}
+				req.reply("Faucet timers: [%s]" % (Global.faucet_list))
+			elif len(arg) < 1 and Irc.is_super_admin(req.source):
+				req.reply("Faucet timers: [%s]" % (Global.faucet_list))
+		elif command == "gamble-reset":
 			if len(arg) == 2 and arg[0] in Global.gamble_list and (arg[1] == "now" or arg[1] == "del"):
 				Global.gamble_list.pop(arg[0])
 				req.reply("Done")
@@ -742,7 +833,10 @@ def admin(req, arg):
 				req.reply("Gamble [%s] timer at [%s]" % (arg[1], datetime.datetime.fromtimestamp(int(Global.gamble_list[(arg[0])][(arg[1])])).strftime('%Y-%m-%d %H:%M')) if arg[1] in Global.gamble_list[(arg[0])] else "User [%s] does not exist" % (arg[1]))
 			elif len(arg) == 1 and arg[0] in Global.gamble_list:
 				req.reply("Gamble timers: [%s]" % (Global.gamble_list[(arg[0])]))
-			elif len(arg) < 1:
+			elif len(arg) == 1 and arg[0] == "clearall" and Irc.is_super_admin(req.source):
+				Global.gamble_list = {}
+				req.reply("Gamble timers: [%s]" % (Global.gamble_list))
+			elif len(arg) < 1 and Irc.is_super_admin(req.source):
 				req.reply("Gamble timers: [%s]" % (Global.gamble_list))
 		elif command == "gamblelock":
 			if len(arg) == 3 and arg[2].isdigit():
@@ -771,7 +865,7 @@ def admin(req, arg):
 					req.reply("Done")
 				elif len(arg) == 1 and arg[0] == "show":
 					req.reply("Gamble limits: %s" % (Global.gamble_list["@gamblelimitraise"]))
-		elif command == "readreset":
+		elif command == "read-reset":
 			if len(arg) > 1 and arg[0] in Global.response_read_timers:
 				Global.response_read_timers.pop(arg[0])
 				req.reply("Done")
@@ -854,10 +948,132 @@ def admin(req, arg):
 		elif command == "list-mods-iamsure" and Irc.is_super_admin(req.source):
 			if "admins" in Config.config:
 				req.reply("Mods: %s" % (Config.config["admins"]))
+		elif command == "maintenance-mode" and Irc.is_super_admin(req.source):
+			if arg[0] == "on":
+				Config.config["maintenance_mode"] = True
+			elif arg[0] == "off":
+				Config.config["maintenance_mode"] = False
+			req.reply("Maintenance Mode:: %s" % (Config.config["maintenance_mode"]))
+		elif command == "update-decimal-lock" and Irc.is_super_admin(req.source):
+			if arg[0].isdigit():
+				oldplaces = int(arg[0])
+				req.reply("This would update database balances to switch old decimal places of %i to %i" % (oldplaces,Config.config["decimalplaces"]))
+			elif arg[0] == "iamsure":
+				oldplaces = int(arg[1])
+				Transactions.updatedecimals(oldplaces = oldplaces)
+				req.reply("Database updated, balances switched from old decimal places of %i to %i" % (oldplaces,Config.config["decimalplaces"]))
+		elif command == "game-stats":
+			"""game-stats GAME NICK X [DAYS/HOURS/MINUTES]"""
+			if len(arg) < 2: return
+			game_ident = "%s" % (arg[0].upper())
+			if game_ident == "BJ":
+				game_ident = "BLACKJACK"
+			elif game_ident == "21":
+				game_ident = "BLACKJACK"
+			elif game_ident == "FONDLEBALLS":
+				game_ident = "ROULETTE"
+			elif game_ident == "BALLFONDLE":
+				game_ident = "ROULETTE"
+			elif game_ident == "ROUL":
+				game_ident = "ROULETTE"
+			elif game_ident == "LOTTERY":
+				game_ident = "LOTTO"
+			elif game_ident == "GAMBLE":
+				game_ident = "LOTTO"
+			game_ident = "@%s" % (game_ident)
+			game_ident_sum = ("%s%%" % (game_ident))
+			game_ident_in = ("%s_START" % (game_ident))
+			game_ident_out = ("%s_WIN" % (game_ident))
+			if arg[0] == "all":
+				game_ident = ['@POKER%', '@BLACKJACK%', '@ROUL%', '@LOTTO%']
+				game_ident_sum = game_ident
+				game_ident_in = ['@POKER_START', '@BLACKJACK_START', '@ROULETTE_START', '@LOTTO_START']
+				game_ident_out = ['@POKER_WIN', '@BLACKJACK_WIN', '@ROULETTE_WIN', '@LOTTO_WIN']
+			nick = arg[1]
+			time_amt = 24
+			if len(arg) >= 3:
+				time_amt = int(arg[2])
+			interval = "hours"
+			if len(arg) >= 4:
+				if arg[3].lower() == "minutes" or arg[3].lower() == "minute":
+					interval = "minutes"
+				elif arg[3].lower() == "hours" or arg[3].lower() == "hour":
+					interval = "hours"
+				elif arg[3].lower() == "days" or arg[3].lower() == "day":
+					interval = "days"
+			interval = "%i %s" % (time_amt, interval)
+			acct = Irc.account_names([nick])[0]
+			InSum = Transactions.get_game_stats(req.instance, mode = "in-sum", game_ident = game_ident_sum, acct = acct, interval = interval, count = False)
+			OutSum = Transactions.get_game_stats(req.instance, mode = "out-sum", game_ident = game_ident_sum, acct = acct, interval = interval, count = False)
+			InCount = Transactions.get_game_stats(req.instance, mode = "in", game_ident = game_ident_in, acct = acct, interval = interval, count = True)
+			OutCount = Transactions.get_game_stats(req.instance, mode = "out", game_ident = game_ident_out, acct = acct, interval = interval, count = True)
+			Difference = (int(OutSum) - int(InSum))
+			won_or_lost = "won"
+			if Difference < 0:
+				won_or_lost = "lost"
+				Difference = -Difference
+			if arg[0] == "all": game_ident = "ALL"
+			req.reply("For the past %s of \x02%s\x02, %s %s a total of \x02%s\x02 %s ( Won %s - Lost %s ). Played \x02%i\x02 times, won \x02%i\x02 times." % (interval, game_ident, nick, won_or_lost, print_amount(Difference), Config.config["coinab"], print_amount(OutSum), print_amount(InSum), InCount, OutCount))
 		else:
 			req.reply("You are not authorised to use that command.")
 
 commands["admin"] = admin
+
+def mystats(req, arg):
+	"""%mystats <game> <X> [DAYS/HOURS/MINUTES] - Displays your stats"""
+	if len(arg) < 1:
+		return req.reply(gethelp("mystats"))
+	acct = Irc.account_names([req.nick])[0]
+	user_valid = validate_user(acct)
+	if user_valid != True: return req.notice_private(user_valid)
+	game_ident = "%s" % (arg[0].upper())
+	if game_ident == "BJ":
+		game_ident = "BLACKJACK"
+	elif game_ident == "21":
+		game_ident = "BLACKJACK"
+	elif game_ident == "FONDLEBALLS":
+		game_ident = "ROULETTE"
+	elif game_ident == "BALLFONDLE":
+		game_ident = "ROULETTE"
+	elif game_ident == "ROUL":
+		game_ident = "ROULETTE"
+	elif game_ident == "LOTTERY":
+		game_ident = "LOTTO"
+	elif game_ident == "GAMBLE":
+		game_ident = "LOTTO"
+	game_ident = "@%s" % (game_ident)
+	game_ident_sum = ("%s%%" % (game_ident))
+	game_ident_in = ("%s_START" % (game_ident))
+	game_ident_out = ("%s_WIN" % (game_ident))
+	if arg[0].upper() == "ALL":
+		game_ident = ['@POKER%', '@BLACKJACK%', '@ROUL%', '@LOTTO%']
+		game_ident_sum = game_ident
+		game_ident_in = ['@POKER_START', '@BLACKJACK_START', '@ROULETTE_START', '@LOTTO_START']
+		game_ident_out = ['@POKER_WIN', '@BLACKJACK_WIN', '@ROULETTE_WIN', '@LOTTO_WIN']
+	time_amt = 24
+	if len(arg) >= 2:
+		time_amt = int(arg[1])
+	interval = "hours"
+	if len(arg) >= 3:
+		if arg[2].lower() == "minutes" or arg[2].lower() == "minute":
+			interval = "minutes"
+		elif arg[2].lower() == "hours" or arg[2].lower() == "hour":
+			interval = "hours"
+		elif arg[2].lower() == "days" or arg[2].lower() == "day":
+			interval = "days"
+	interval = "%i %s" % (time_amt, interval)
+	InSum = Transactions.get_game_stats(req.instance, mode = "in-sum", game_ident = game_ident_sum, acct = acct, interval = interval, count = False)
+	OutSum = Transactions.get_game_stats(req.instance, mode = "out-sum", game_ident = game_ident_sum, acct = acct, interval = interval, count = False)
+	InCount = Transactions.get_game_stats(req.instance, mode = "in", game_ident = game_ident_in, acct = acct, interval = interval, count = True)
+	OutCount = Transactions.get_game_stats(req.instance, mode = "out", game_ident = game_ident_out, acct = acct, interval = interval, count = True)
+	Difference = (int(OutSum) - int(InSum))
+	won_or_lost = "won"
+	if Difference < 0:
+		won_or_lost = "lost"
+		Difference = -Difference
+	req.reply("For the past %s of \x02%s\x02, you %s a total of \x02%s\x02 %s ( Won %s - Lost %s ). Played \x02%i\x02 times, won \x02%i\x02 times." % (interval, arg[0].lower(), won_or_lost, print_amount(Difference), Config.config["coinab"], print_amount(OutSum), print_amount(InSum), InCount, OutCount))
+
+commands["mystats"] = mystats
 
 def price(req, arg):
 	"""%price - Checks current price of ROGER."""
